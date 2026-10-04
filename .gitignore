@@ -9,3 +9,6 @@ control-panel/**/*.json
 GoogleAppsScript*.js
 *.env
 .env
+
+# Release zips (scripts/package.ps1)
+/dist

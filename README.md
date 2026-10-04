@@ -9,6 +9,10 @@ It also adds:
 
 Its menu items are in the shared **🎭 Theater** menu: Show Control Panel, Settings…, Reload, and Convert Browser Sources…. It talks to [Theater Scene](https://github.com/Mortygotvr/Theater-Scene) and [Theater Reader](https://github.com/Mortygotvr/Theater-Reader) through OBS's own procedures and signals (the `theater_` ones), with no network involved.
 
+## Installing a release
+
+Extract the zip into `C:\ProgramData\obs-studio\plugins`, so you get `plugins\theater-control-panel\bin` and `plugins\theater-control-panel\data`, then restart OBS (30 or newer).
+
 ## Building (Windows only)
 
 You need Rust, the MSVC build tools and OBS Studio 30 or newer.
