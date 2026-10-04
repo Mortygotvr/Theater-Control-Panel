@@ -1,0 +1,31 @@
+# Node & Environment
+node_modules/
+.venv/
+venv/
+.env
+
+# Build & Dist Outputs
+dist/*.zip
+dist/*.7z
+scratch_modules/
+src-tauri/target/
+
+# IDE & Tooling
+.vscode/
+.clinerules
+.cursorrules
+
+# Debug & Temporary artifacts
+GoogleAppsScript*.js
+*.log
+*.png
+*.txt
+recovered_config.json
+split_layout.json
+old_cp.html
+chat_initial.html
+category_dropdown.html
+dialog_content.html
+full_page_popover.html
+initial_page.html
+kick_popout.html

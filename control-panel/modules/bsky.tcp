@@ -1,0 +1,641 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "bsky_api";
+    let currentConfig = {};
+
+    if (!window.saveConfig) {
+        window.saveConfig = function() {
+            if (window.config) {
+                localStorage.setItem("obs_bridge_config", JSON.stringify(window.config));
+            }
+        };
+    }
+
+    function safeLog(msg, isError = false) {
+        if (window.logMsg) {
+            window.logMsg(msg, isError);
+        } else {
+            console.log(msg);
+        }
+    }
+
+    let bskyObserver = null;
+
+    function updateCommandFieldsVisibility(row) {
+        const typeSelect = row.querySelector('.cmd-type');
+        if (!typeSelect || typeSelect.value !== 'bsky_command') return;
+
+        const commandTypeSelect = row.querySelector('.cmd-custom-commandType');
+        if (!commandTypeSelect) return;
+
+        const commandType = commandTypeSelect.value;
+
+        const fields = {
+            message: commandType === 'post_skeet',
+            autoSuffix: commandType === 'post_skeet',
+            duration: commandType === 'activate_live',
+            streamUrl: commandType === 'activate_live'
+        };
+
+        for (const [fieldId, shouldShow] of Object.entries(fields)) {
+            const el = row.querySelector(`.cmd-custom-${fieldId}`);
+            if (el) {
+                const parent = el.closest('div');
+                if (parent) {
+                    parent.style.display = shouldShow ? 'block' : 'none';
+                }
+            }
+        }
+    }
+
+    function updateAllBskyFieldsVisibility() {
+        document.querySelectorAll('.trigger-card .command-row').forEach(row => {
+            updateCommandFieldsVisibility(row);
+        });
+    }
+
+    function handleDocumentChange(e) {
+        if (e.target) {
+            if (e.target.classList.contains('cmd-custom-commandType')) {
+                const row = e.target.closest('.command-row');
+                if (row) {
+                    updateCommandFieldsVisibility(row);
+                }
+            }
+            if (e.target.classList.contains('cmd-type')) {
+                setTimeout(() => {
+                    updateAllBskyFieldsVisibility();
+                }, 50);
+            }
+        }
+    }
+
+    function startObserving() {
+        const targetNode = document.getElementById('triggers-container');
+        if (!targetNode) return;
+
+        updateAllBskyFieldsVisibility();
+
+        bskyObserver = new MutationObserver((mutations) => {
+            let shouldUpdate = false;
+            for (const mutation of mutations) {
+                if (mutation.addedNodes.length > 0) {
+                    shouldUpdate = true;
+                    break;
+                }
+            }
+            if (shouldUpdate) {
+                setTimeout(() => {
+                    updateAllBskyFieldsVisibility();
+                }, 50);
+            }
+        });
+
+        bskyObserver.observe(targetNode, { childList: true, subtree: true });
+    }
+
+    const MODULE_DEFINITION = {
+        name: "Bluesky API",
+        description: "Enables posting skeets and setting the 'Live Now' badge on your profile natively using the free, open AT Protocol. <br><button class='btn-green' onclick='window.TheaterController.modules.bsky_api.definition.testPost()' style='margin-top: 5px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; border-radius: 4px; border: none;'>🧪 Test Post</button> <button class='btn-green' onclick='window.TheaterController.modules.bsky_api.definition.testLiveBadge()' style='margin-top: 5px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; border-radius: 4px; border: none;'>🔗 Test Live Badge</button> <button class='btn-red' onclick='window.TheaterController.modules.bsky_api.definition.testClearLiveBadge()' style='margin-top: 5px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; border-radius: 4px; border: none; background-color: #f44336; color: white;'>❌ Clear Live Badge</button>",
+        configFields: [
+            {
+                id: "handle",
+                label: "Bluesky Handle (e.g. username.bsky.social)",
+                type: "text",
+                default: ""
+            },
+            {
+                id: "app_password",
+                label: "App Password <a href='#' onclick=\"if(window.__TAURI__){window.__TAURI__.core.invoke('open_in_browser',{url:'https://bsky.app/settings/app-passwords'});}else{window.open('https://bsky.app/settings/app-passwords','_blank');}return false;\" style='color: #4caf50; text-decoration: underline; margin-left: 5px; font-weight: bold;'>Get it here</a> (Settings -> Privacy & Security -> App Passwords) <button class='btn-green' onclick='window.TheaterController.modules.bsky_api.definition.connectAccount()' style='margin-left: 10px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; display: inline-block; vertical-align: middle; border-radius: 4px; border: none;'>🔗 Authenticate</button>",
+                type: "password",
+                default: ""
+            }
+        ],
+
+        onLoad(moduleConfig) {
+            safeLog("[Bluesky API] Module loaded successfully.");
+            currentConfig = moduleConfig;
+
+            if (currentConfig.handle && currentConfig.app_password) {
+                setTimeout(() => {
+                    getValidToken();
+                }, 1000);
+            }
+
+            document.addEventListener('change', handleDocumentChange, true);
+            document.addEventListener('input', handleDocumentChange, true);
+            setTimeout(startObserving, 500);
+        },
+
+        onUnload() {
+            safeLog("[Bluesky API] Module unloaded.");
+            document.removeEventListener('change', handleDocumentChange, true);
+            document.removeEventListener('input', handleDocumentChange, true);
+            if (bskyObserver) {
+                bskyObserver.disconnect();
+                bskyObserver = null;
+            }
+        },
+
+        async connectAccount() {
+            const handle = getFieldVal("handle");
+            const appPassword = getFieldVal("app_password");
+            if (!handle || !appPassword) {
+                alert("Please enter both Bluesky Handle and App Password.");
+                return;
+            }
+
+            // Sync currentConfig with DOM values immediately and link reference
+            currentConfig.handle = handle;
+            currentConfig.app_password = appPassword;
+            if (window.config) {
+                if (!window.config.modules) window.config.modules = {};
+                window.config.modules.bsky_api = currentConfig;
+            }
+
+            safeLog("[Bluesky API] Initiating session authentication...");
+            const success = await createSession(handle, appPassword);
+            if (success) {
+                alert("Authentication successful! Session token and DID saved.");
+            } else {
+                alert("Authentication failed. Check the log window for details.");
+            }
+        },
+
+        async testPost() {
+            const txt = prompt("Enter test skeet text:", `Testing Bluesky API integration! 🧪 ${new Date().toLocaleTimeString()}`);
+            if (txt) {
+                await postSkeet(txt);
+            }
+        },
+
+        async testLiveBadge() {
+            const handle = getFieldVal("handle");
+            let twitchUser = handle ? handle.split('.')[0] : "";
+            const defaultUrl = twitchUser ? `https://twitch.tv/${twitchUser}` : "https://twitch.tv/";
+            const url = prompt("Enter Streaming Address:", defaultUrl);
+            if (!url) return;
+            const dur = prompt("Enter Live Badge Duration (hours):", "2");
+            if (!dur) return;
+            await activateLiveStatus(url, dur);
+        },
+
+        async testClearLiveBadge() {
+            if (confirm("Are you sure you want to clear the 'Live Now' badge from your Bluesky profile?")) {
+                await deactivateLiveStatus();
+            }
+        }
+    };
+
+    function getFieldVal(fieldId) {
+        const el = document.querySelector(`.mod-field-bsky_api[data-field-id="${fieldId}"]`);
+        return el ? el.value.trim() : (currentConfig[fieldId] || "").trim();
+    }
+
+    async function getValidToken() {
+        const handle = getFieldVal("handle");
+        const appPassword = getFieldVal("app_password");
+        
+        if (!handle || !appPassword) {
+            safeLog("[Bluesky API Error] Handle or App Password is not configured.", true);
+            return null;
+        }
+
+        let token = (currentConfig.access_token || "").trim();
+        const expiresAt = currentConfig.token_expires_at || 0;
+
+        if (!token || Date.now() >= (expiresAt - 60000)) {
+            const success = await createSession(handle, appPassword);
+            if (!success) {
+                safeLog("[Bluesky API Error] Session creation failed. Please check your credentials.", true);
+                return null;
+            }
+            token = currentConfig.access_token;
+        }
+        return token;
+    }
+
+    async function createSession(handle, appPassword) {
+        safeLog("[Bluesky API] Creating a new session on Bluesky...");
+        try {
+            const data = await bskyRequest("https://bsky.social/xrpc/com.atproto.server.createSession", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: {
+                    identifier: handle,
+                    password: appPassword
+                }
+            });
+
+            if (data && data.accessJwt) {
+                currentConfig.handle = handle;
+                currentConfig.app_password = appPassword;
+                currentConfig.access_token = data.accessJwt;
+                currentConfig.did = data.did;
+                currentConfig.token_expires_at = Date.now() + (2 * 60 * 60 * 1000); // 2 hours
+
+                if (window.config) {
+                    if (!window.config.modules) window.config.modules = {};
+                    window.config.modules.bsky_api = currentConfig;
+                    if (window.saveConfig) window.saveConfig();
+                }
+
+                safeLog("[Bluesky API] Session established successfully!");
+                if (window.renderModulesUI) window.renderModulesUI();
+                return true;
+            }
+            return false;
+        } catch (err) {
+            safeLog(`[Bluesky API Error] Session request failed: ${err.message || err}`, true);
+            return false;
+        }
+    }
+
+    async function bskyRequest(url, options = {}) {
+        const headers = options.headers || {};
+        const method = options.method || "GET";
+        let body = options.body || null;
+
+        if (body && typeof body === "object") {
+            body = JSON.stringify(body);
+        }
+
+        if (window.__TAURI__) {
+            try {
+                const args = ["-s", "-X", method];
+                for (const [k, v] of Object.entries(headers)) {
+                    args.push("-H", `${k}: ${v}`);
+                }
+                if (body) {
+                    args.push("-d", body);
+                }
+                args.push(url);
+                args.push("-w", "\nHTTP_STATUS_CODE:%{http_code}");
+
+                const stdout = await window.__TAURI__.core.invoke("run_external_command", {
+                    program: "curl",
+                    args: args
+                });
+
+                const marker = "\nHTTP_STATUS_CODE:";
+                const idx = stdout.lastIndexOf(marker);
+                if (idx === -1) {
+                    throw new Error(`Invalid response format from curl: ${stdout}`);
+                }
+                const bodyPart = stdout.substring(0, idx);
+                const statusCodeStr = stdout.substring(idx + marker.length).trim();
+                const statusCode = parseInt(statusCodeStr, 10);
+
+                if (statusCode < 200 || statusCode >= 300) {
+                    throw new Error(`HTTP Error ${statusCode}: ${bodyPart}`);
+                }
+
+                try {
+                    return JSON.parse(bodyPart);
+                } catch(e) {
+                    return bodyPart;
+                }
+            } catch (err) {
+                safeLog(`[Bluesky API Error] Native curl request failed: ${err.message || err}`, true);
+                throw err;
+            }
+        }
+
+        const fetchOpts = {
+            method: method,
+            headers: headers
+        };
+        if (body) {
+            fetchOpts.body = body;
+        }
+        const res = await fetch(url, fetchOpts);
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`Direct Fetch Error ${res.status} ${res.statusText}: ${text}`);
+        }
+        return await res.json();
+    }
+
+    function parseRichTextFacets(text) {
+        const encoder = new TextEncoder();
+        const linkRegex = /https?:\/\/[^\s]+/g;
+        const mentionRegex = /@[a-zA-Z0-9_.-]+/g;
+        
+        const facets = [];
+        const mentionsToResolve = [];
+        
+        function getByteRange(matchText, charIndexStart) {
+            const prefixText = text.slice(0, charIndexStart);
+            const byteStart = encoder.encode(prefixText).length;
+            const byteEnd = byteStart + encoder.encode(matchText).length;
+            return { byteStart, byteEnd };
+        }
+        
+        let match;
+        while ((match = linkRegex.exec(text)) !== null) {
+            const url = match[0];
+            const range = getByteRange(url, match.index);
+            facets.push({
+                index: {
+                    byteStart: range.byteStart,
+                    byteEnd: range.byteEnd
+                },
+                features: [{
+                    $type: "app.bsky.richtext.facet#link",
+                    uri: url
+                }]
+            });
+        }
+        
+        while ((match = mentionRegex.exec(text)) !== null) {
+            const handle = match[0].substring(1);
+            const range = getByteRange(match[0], match.index);
+            mentionsToResolve.push({
+                handle: handle,
+                byteStart: range.byteStart,
+                byteEnd: range.byteEnd
+            });
+        }
+        
+        return { facets, mentionsToResolve };
+    }
+
+    async function postSkeet(text, autoSuffix = "yes") {
+        // 1. Auto-suffix handles that don't have a dot with .bsky.social
+        let resolvedText = text || "";
+        if (autoSuffix === "yes" || autoSuffix === true || autoSuffix === "true") {
+            resolvedText = resolvedText.replace(/@([a-zA-Z0-9_.-]+)/g, (match, handle) => {
+                if (!handle.includes('.')) {
+                    return `@${handle}.bsky.social`;
+                }
+                return match;
+            });
+        }
+
+        safeLog(`[Bluesky API] Attempting to post to Bluesky: "${resolvedText}"`);
+        try {
+            const token = await getValidToken();
+            const did = getFieldVal("did");
+            if (!token || !did) {
+                safeLog("[Bluesky API Error] Cannot post: No valid session available.", true);
+                return;
+            }
+
+            // 2. Parse links and mentions for facets
+            const { facets, mentionsToResolve } = parseRichTextFacets(resolvedText);
+
+            // 3. Resolve mentions handles to DIDs
+            for (const m of mentionsToResolve) {
+                try {
+                    const res = await bskyRequest(`https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(m.handle)}`, {
+                        method: "GET"
+                    });
+                    if (res && res.did) {
+                        facets.push({
+                            index: {
+                                byteStart: m.byteStart,
+                                byteEnd: m.byteEnd
+                            },
+                            features: [{
+                                $type: "app.bsky.richtext.facet#mention",
+                                did: res.did
+                            }]
+                        });
+                        console.log(`[Bluesky API] Resolved handle @${m.handle} to ${res.did}`);
+                    }
+                } catch (err) {
+                    safeLog(`[Bluesky API Warning] Failed to resolve mention for handle @${m.handle}: ${err.message || err}`, true);
+                }
+            }
+
+            const record = {
+                $type: "app.bsky.feed.post",
+                text: resolvedText,
+                createdAt: new Date().toISOString()
+            };
+            if (facets.length > 0) {
+                record.facets = facets;
+            }
+
+            const response = await bskyRequest("https://bsky.social/xrpc/com.atproto.repo.createRecord", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                },
+                body: {
+                    repo: did,
+                    collection: "app.bsky.feed.post",
+                    record: record
+                }
+            });
+
+            if (response && response.uri) {
+                safeLog(`[Bluesky API] Posted successfully! URI: ${response.uri}`);
+            } else {
+                safeLog(`[Bluesky API Error] Failed to post. Response: ${JSON.stringify(response)}`, true);
+            }
+        } catch (err) {
+            safeLog(`[Bluesky API Error] Failed to post: ${err.message || err}`, true);
+        }
+    }
+
+    async function activateLiveStatus(twitchUrl, durationHours) {
+        safeLog(`[Bluesky API] Activating Live status on profile with URL: "${twitchUrl}", duration: ${durationHours} hours`);
+        try {
+            const token = await getValidToken();
+            const did = getFieldVal("did");
+            if (!token || !did) {
+                safeLog("[Bluesky API Error] Cannot set Live status: No valid session available.", true);
+                return;
+            }
+
+            const durationMinutes = Math.round(parseFloat(durationHours) * 60) || 120;
+            
+            // extract channel name or username for title/desc
+            let streamName = "Twitch Stream";
+            try {
+                const parts = twitchUrl.split('/');
+                const lastPart = parts[parts.length - 1] || parts[parts.length - 2];
+                if (lastPart) {
+                    streamName = lastPart;
+                }
+            } catch (e) {}
+
+            const response = await bskyRequest("https://bsky.social/xrpc/com.atproto.repo.putRecord", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                },
+                body: {
+                    repo: did,
+                    collection: "app.bsky.actor.status",
+                    rkey: "self",
+                    record: {
+                        $type: "app.bsky.actor.status",
+                        status: "app.bsky.actor.status#live",
+                        createdAt: new Date().toISOString(),
+                        durationMinutes: durationMinutes,
+                        embed: {
+                            $type: "app.bsky.embed.external",
+                            external: {
+                                uri: twitchUrl,
+                                title: `${streamName} is Live Now!`,
+                                description: `Watch my stream live on Twitch at ${twitchUrl}`
+                            }
+                        }
+                    }
+                }
+            });
+
+            safeLog(`[Bluesky API] Live status activated successfully via API. Response: ${JSON.stringify(response)}`);
+        } catch (err) {
+            safeLog(`[Bluesky API Error] Failed to activate Live status: ${err.message || err}`, true);
+        }
+    }
+
+    async function deactivateLiveStatus() {
+        safeLog(`[Bluesky API] Deactivating Live status on profile...`);
+        try {
+            const token = await getValidToken();
+            const did = getFieldVal("did");
+            if (!token || !did) {
+                safeLog("[Bluesky API Error] Cannot deactivate Live status: No valid session available.", true);
+                return;
+            }
+
+            const response = await bskyRequest("https://bsky.social/xrpc/com.atproto.repo.deleteRecord", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                },
+                body: {
+                    repo: did,
+                    collection: "app.bsky.actor.status",
+                    rkey: "self"
+                }
+            });
+
+            safeLog(`[Bluesky API] Live status deactivated successfully via API. Response: ${JSON.stringify(response)}`);
+        } catch (err) {
+            safeLog(`[Bluesky API Error] Failed to deactivate Live status: ${err.message || err}`, true);
+        }
+    }
+
+    function replaceTemplateVariables(text, matches, payload) {
+        let result = text || "";
+        if (matches && Array.isArray(matches)) {
+            matches.forEach((val, idx) => {
+                result = result.replace(new RegExp(`\\{${idx + 1}\\}`, 'g'), val || "");
+            });
+        }
+        if (payload) {
+            Object.entries(payload).forEach(([key, val]) => {
+                if (typeof val !== 'object' && val !== null) {
+                    result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), val);
+                }
+            });
+            if (payload.customData && typeof payload.customData === 'object') {
+                Object.entries(payload.customData).forEach(([key, val]) => {
+                    if (typeof val !== 'object' && val !== null) {
+                        result = result.replace(new RegExp(`\\{customData\\.${key}\\}`, 'g'), val);
+                        result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), val);
+                    }
+                });
+            }
+        }
+        return result;
+    }
+
+    // Register Command / Unified Action
+    window.TheaterController.registerCommand("bsky_command", async (inputs, matches, payload) => {
+        const commandType = inputs.commandType || "post_skeet";
+        const resolve = (txt) => {
+            if (!txt) return "";
+            return window.TheaterController.replaceVariables ?
+                window.TheaterController.replaceVariables(txt, matches, payload) :
+                replaceTemplateVariables(txt, matches, payload);
+        };
+
+        if (commandType === 'post_skeet') {
+            const textTemplate = inputs.message || "";
+            if (textTemplate) {
+                await postSkeet(resolve(textTemplate), inputs.autoSuffix || "yes");
+            }
+        } else if (commandType === 'activate_live') {
+            const handle = getFieldVal("handle");
+            if (!handle) {
+                safeLog("[Bluesky API Error] Handle is not set in settings card.", true);
+                return;
+            }
+
+            // Prioritize the streamUrl from command inputs, then dynamic fallback
+            let tUrl = resolve(inputs.streamUrl);
+            if (!tUrl) {
+                let twitchUser = "";
+                if (payload && payload.username) {
+                    twitchUser = payload.username;
+                }
+                if (!twitchUser) {
+                    twitchUser = handle.split('.')[0];
+                }
+                tUrl = `https://twitch.tv/${twitchUser}`;
+            }
+            const dur = resolve(inputs.duration) || "2";
+            
+            await activateLiveStatus(tUrl, dur);
+        } else if (commandType === 'deactivate_live') {
+            await deactivateLiveStatus();
+        }
+    }, {
+        label: "Bluesky: Action / Command",
+        fields: [
+            {
+                id: "commandType",
+                label: "Bluesky Command Type",
+                type: "select",
+                options: [
+                    { value: "post_skeet", label: "Post a Skeet" },
+                    { value: "activate_live", label: "Activate Live Now Badge" },
+                    { value: "deactivate_live", label: "Deactivate Live Now Badge" }
+                ],
+                default: "post_skeet"
+            },
+            {
+                id: "message",
+                label: "Post Text (for Post a Skeet)",
+                type: "text",
+                default: "Hello from Control Panel! {username}",
+                style: "grid-column: 1 / -1;"
+            },
+            {
+                id: "autoSuffix",
+                label: "Auto-suffix @mentions with .bsky.social",
+                type: "select",
+                options: [
+                    { value: "yes", label: "Yes" },
+                    { value: "no", label: "No" }
+                ],
+                default: "yes"
+            },
+            {
+                id: "streamUrl",
+                label: "Streaming Address (e.g. Twitch/Kick URL)",
+                type: "text",
+                default: ""
+            },
+            {
+                id: "duration",
+                label: "Live Badge Duration (hours)",
+                type: "text",
+                default: "2"
+            }
+        ]
+    }, MODULE_ID);
+
+    window.TheaterController.registerModule(MODULE_ID, MODULE_DEFINITION);
+})();

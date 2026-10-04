@@ -1,0 +1,302 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "websocket_connector";
+    const wsConnectors = [];
+    let statusInterval = null;
+
+
+
+    class wsWebSocketConnector {
+        constructor(connectionUrl, triggerName) {
+            this.connectionUrl = connectionUrl;
+            this.triggerName = triggerName;
+            this.websocket = null;
+            this.maxReconnectAttempts = 999;
+            this.reconnectInterval = 5000;
+            this.reconnectAttempts = 0;
+            this.reconnectTimer = null;
+            this.terminateRequested = false;
+        }
+
+        wsConnect() {
+            if (this.websocket && (this.websocket.readyState === WebSocket.OPEN || this.websocket.readyState === WebSocket.CONNECTING)) {
+                return;
+            }
+
+            logMsg("[WebSocket] Connecting to: " + this.connectionUrl);
+
+            try {
+                this.websocket = new WebSocket(this.connectionUrl);
+                updateWSStatusTable();
+            } catch (e) {
+                logMsg(`[WebSocket Error] Creation failed: ${e.message}`, true);
+                this.tryReconnect();
+                return;
+            }
+
+            this.websocket.onopen = () => {
+                logMsg(`[WebSocket] Connection "${this.triggerName}" connected successfully.`);
+                this.reconnectAttempts = 0;
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+                updateWSStatusTable();
+            };
+
+            this.websocket.onmessage = (event) => {
+                logMsg(`[WebSocket] Message received on "${this.triggerName}": ${event.data}`);
+                
+                let parsedData = {};
+                try {
+                    parsedData = JSON.parse(event.data);
+                } catch (e) {}
+
+                const payload = {
+                    username: "WebSocket",
+                    message: event.data,
+                    customData: Object.assign({ raw: event.data }, parsedData)
+                };
+
+                // Trigger mapping
+                if (window.checkTriggers) {
+                    window.checkTriggers(this.triggerName, payload);
+                }
+            };
+
+            this.websocket.onerror = (error) => {
+                logMsg(`[WebSocket Error] "${this.triggerName}" encountered an error.`, true);
+            };
+
+            this.websocket.onclose = (event) => {
+                logMsg(`[WebSocket] Connection "${this.triggerName}" closed (Code: ${event.code}).`);
+                updateWSStatusTable();
+                this.tryReconnect();
+            };
+        }
+
+        wsSendMessage(message) {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.websocket.send(message);
+                logMsg(`[WebSocket] Message sent to "${this.triggerName}": ${message}`);
+            } else {
+                logMsg(`[WebSocket Error] Connection "${this.triggerName}" is not open. Cannot send message.`, true);
+            }
+        }
+
+        wsAutoConnect() {
+            this.wsConnect();
+        }
+
+        tryReconnect() {
+            if (this.terminateRequested) return;
+            if (this.reconnectTimer) return; // Reconnect is already scheduled
+
+            if (this.reconnectAttempts < this.maxReconnectAttempts) {
+                logMsg(`[WebSocket] Attempting to reconnect "${this.triggerName}"...`);
+                this.reconnectAttempts++;
+                this.reconnectTimer = setTimeout(() => {
+                    this.reconnectTimer = null;
+                    if (!this.websocket || this.websocket.readyState === WebSocket.CLOSED) {
+                        this.wsConnect();
+                    } else {
+                        logMsg(`[WebSocket] "${this.triggerName}" is already connected. Skipping reconnection.`);
+                    }
+                }, this.reconnectInterval);
+            }
+        }
+
+        terminate() {
+            this.terminateRequested = true;
+            clearTimeout(this.reconnectTimer);
+            if (this.websocket) {
+                this.websocket.onopen = null;
+                this.websocket.onmessage = null;
+                this.websocket.onerror = null;
+                this.websocket.onclose = null;
+                if (this.websocket.readyState === WebSocket.OPEN || this.websocket.readyState === WebSocket.CONNECTING) {
+                    this.websocket.close();
+                }
+            }
+            logMsg(`[WebSocket] Connection "${this.triggerName}" terminated.`);
+        }
+    }
+
+    function wsCreateWebSocketConnector(connectionUrl, triggerName) {
+        const existingConnector = wsConnectors.find(connector => connector.triggerName.toLowerCase() === triggerName.toLowerCase());
+        if (existingConnector) {
+            logMsg(`[WebSocket Warning] A connector with name "${triggerName}" already exists.`, true);
+            return;
+        }
+
+        const connector = new wsWebSocketConnector(connectionUrl, triggerName);
+        wsConnectors.push(connector);
+        updateConnectionsConfig();
+        updateWSStatusTable();
+        connector.wsAutoConnect();
+    }
+
+    function wsTerminate(triggerName) {
+        const idx = wsConnectors.findIndex(connector => connector.triggerName.toLowerCase() === triggerName.toLowerCase());
+        if (idx !== -1) {
+            wsConnectors[idx].terminate();
+            wsConnectors.splice(idx, 1);
+            updateConnectionsConfig();
+            updateWSStatusTable();
+        } else {
+            logMsg(`[WebSocket Error] No active connection found with name "${triggerName}"`, true);
+        }
+    }
+
+    function wsSendMessageByTriggerName(triggerName, message) {
+        const connector = wsConnectors.find(connector => connector.triggerName.toLowerCase() === triggerName.toLowerCase());
+        if (connector) {
+            connector.wsSendMessage(message);
+        } else {
+            logMsg(`[WebSocket Error] No active connection found with name "${triggerName}"`, true);
+        }
+    }
+
+    function updateConnectionsConfig() {
+        const mod = window.TheaterController.modules[MODULE_ID];
+        if (mod) {
+            mod.config.connections = wsConnectors.map(c => ({
+                name: c.triggerName,
+                url: c.connectionUrl
+            }));
+            if (window.saveConfig) {
+                window.saveConfig();
+            }
+        }
+    }
+
+    function updateWSStatusTable() {
+        const container = document.getElementById('loaded-modules-container');
+        if (!container) return;
+        
+        const cardHeaders = container.querySelectorAll('.command-row-header strong');
+        let ourCard = null;
+        cardHeaders.forEach(header => {
+            if (header.innerText === "WebSocket Connector") {
+                ourCard = header.closest('.command-row');
+            }
+        });
+        
+        if (!ourCard) return;
+        
+        let tableDiv = ourCard.querySelector('#ws-status-table-container');
+        if (!tableDiv) {
+            tableDiv = document.createElement('div');
+            tableDiv.id = 'ws-status-table-container';
+            tableDiv.style.marginTop = '15px';
+            tableDiv.style.background = '#111';
+            tableDiv.style.padding = '10px';
+            tableDiv.style.borderRadius = '6px';
+            tableDiv.style.border = '1px solid #333';
+            ourCard.appendChild(tableDiv);
+        }
+        
+        if (wsConnectors.length === 0) {
+            tableDiv.innerHTML = `<p style="color: #666; font-size: 0.85em; margin: 0; font-style: italic;">No active WebSocket connections.</p>`;
+            return;
+        }
+        
+        let rowsHTML = "";
+        wsConnectors.forEach(c => {
+            let statusText = "Disconnected";
+            let statusColor = "#f44336"; // red
+            if (c.websocket) {
+                if (c.websocket.readyState === WebSocket.OPEN) {
+                    statusText = "Connected";
+                    statusColor = "#4caf50"; // green
+                } else if (c.websocket.readyState === WebSocket.CONNECTING) {
+                    statusText = "Connecting";
+                    statusColor = "#ffeb3b"; // yellow
+                } else if (c.websocket.readyState === WebSocket.CLOSING) {
+                    statusText = "Closing";
+                    statusColor = "#ff9800"; // orange
+                }
+            }
+            const status = `<span style="color: ${statusColor};">${statusText}</span>`;
+            rowsHTML += `
+                <tr style="border-bottom: 1px solid #222;">
+                    <td style="padding: 6px; font-size: 0.85em; color: #fff;">${c.triggerName}</td>
+                    <td style="padding: 6px; font-size: 0.85em; color: #aaa; font-family: monospace; word-break: break-all;">${c.connectionUrl}</td>
+                    <td style="padding: 6px; font-size: 0.85em; text-align: right;">${status}</td>
+                </tr>
+            `;
+        });
+        
+        tableDiv.innerHTML = `
+            <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                <thead>
+                    <tr style="border-bottom: 1px solid #444; color: #888; font-size: 0.75em; text-transform: uppercase;">
+                        <th style="padding: 6px;">Name</th>
+                        <th style="padding: 6px;">URL</th>
+                        <th style="padding: 6px; text-align: right;">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rowsHTML}
+                </tbody>
+            </table>
+        `;
+    }
+
+    // Register Commands
+    window.TheaterController.registerCommand("ws_start", (inputs) => {
+        wsCreateWebSocketConnector(inputs.url, inputs.name);
+    }, {
+        label: "WS: Start Connection",
+        fields: [
+            { id: "name", label: "Connection Name", type: "text", default: "TestServer" },
+            { id: "url", label: "WebSocket URL (wss://...)", type: "text", default: "wss://echo.websocket.org" }
+        ]
+    }, MODULE_ID);
+
+    window.TheaterController.registerCommand("ws_terminate", (inputs) => {
+        wsTerminate(inputs.name);
+    }, {
+        label: "WS: Terminate Connection",
+        fields: [
+            { id: "name", label: "Connection Name", type: "text", default: "TestServer" }
+        ]
+    }, MODULE_ID);
+
+    window.TheaterController.registerCommand("ws_send", (inputs) => {
+        wsSendMessageByTriggerName(inputs.name, inputs.message);
+    }, {
+        label: "WS: Send Message",
+        fields: [
+            { id: "name", label: "Connection Name", type: "text", default: "TestServer" },
+            { id: "message", label: "Message Text", type: "text", default: "Hello World" }
+        ]
+    }, MODULE_ID);
+
+    window.TheaterController.registerModule(MODULE_ID, {
+        name: "WebSocket Connector",
+        description: "Creates and manages custom WebSocket connections to trigger actions from incoming messages or send outgoing payloads.",
+        configFields: [],
+        onLoad(moduleConfig) {
+            logMsg("[WebSocket] Module loaded successfully.");
+            // Reconnect to persisted connections
+            if (moduleConfig.connections && Array.isArray(moduleConfig.connections)) {
+                moduleConfig.connections.forEach(conn => {
+                    wsCreateWebSocketConnector(conn.url, conn.name);
+                });
+            }
+            // Run status updater every 2 seconds
+            statusInterval = setInterval(updateWSStatusTable, 2000);
+        },
+        onUnload() {
+            logMsg("[WebSocket] Module unloaded. Terminating all active WebSocket connections...");
+            clearInterval(statusInterval);
+            wsConnectors.forEach(c => c.terminate());
+            wsConnectors.length = 0;
+            // Remove status table from UI if it exists
+            const tableDiv = document.getElementById('ws-status-table-container');
+            if (tableDiv && tableDiv.parentNode) {
+                tableDiv.parentNode.removeChild(tableDiv);
+            }
+        }
+    });
+
+})();

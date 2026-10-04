@@ -1,0 +1,510 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "kick_command";
+
+    let triggerObserver = null;
+
+    function updateCommandFieldsVisibility(row) {
+        const typeSelect = row.querySelector('.cmd-type');
+        if (!typeSelect || typeSelect.value !== 'kick_webview') return;
+
+        const commandTypeSelect = row.querySelector('.cmd-custom-commandType');
+        if (!commandTypeSelect) return;
+
+        const commandType = commandTypeSelect.value;
+
+        // Fields to show/hide
+        const fields = {
+            message: commandType === 'send_message',
+            targetUser: ['ban_user', 'timeout_user', 'unban_user', 'add_moderator', 'remove_moderator', 'add_vip', 'remove_vip'].includes(commandType),
+            reason: ['ban_user', 'timeout_user'].includes(commandType),
+            duration: commandType === 'timeout_user',
+            title: commandType === 'update_stream',
+            categoryId: commandType === 'update_stream',
+            category: commandType === 'update_stream'
+        };
+
+        for (const [fieldId, shouldShow] of Object.entries(fields)) {
+            const el = row.querySelector(`.cmd-custom-${fieldId}`);
+            if (el) {
+                const parent = el.closest('div');
+                if (parent) {
+                    parent.style.display = shouldShow ? 'block' : 'none';
+                }
+            }
+        }
+    }
+
+    function updateAllFieldsVisibility() {
+        document.querySelectorAll('.command-row').forEach(row => {
+            updateCommandFieldsVisibility(row);
+        });
+    }
+
+    function handleDocumentChange(e) {
+        if (e.target) {
+            if (e.target.classList.contains('cmd-custom-commandType')) {
+                const row = e.target.closest('.command-row');
+                if (row) updateCommandFieldsVisibility(row);
+            }
+            if (e.target.classList.contains('cmd-type')) {
+                setTimeout(updateAllFieldsVisibility, 50);
+            }
+        }
+    }
+
+    function startObservingTriggers() {
+        const targetNode = document.getElementById('triggers-container');
+        if (!targetNode) return;
+        
+        updateAllFieldsVisibility();
+
+        triggerObserver = new MutationObserver(() => {
+            updateAllFieldsVisibility();
+        });
+
+        triggerObserver.observe(targetNode, { childList: true, subtree: true });
+        document.addEventListener('change', handleDocumentChange);
+    }
+
+    function stopObservingTriggers() {
+        if (triggerObserver) {
+            triggerObserver.disconnect();
+            triggerObserver = null;
+        }
+        document.removeEventListener('change', handleDocumentChange);
+    }
+
+    window.TheaterController.registerModule(MODULE_ID, {
+        name: "Kick Command (Webview)",
+        description: "Automates Kick dashboard actions (like stream metadata updates & chat moderation commands) by driving a hidden Tauri webview using your active logged-in browser session.<br><button class='btn-green' onclick='window.TheaterController.modules.kick_command.definition.openLogin()' style='margin-top: 5px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; border-radius: 4px; border: none;'>🔗 Login to Kick</button>",
+        configFields: [
+            {
+                id: "broadcaster_id",
+                label: "Broadcaster Username (e.g. mortygotvr)",
+                type: "text",
+                default: ""
+            }
+        ],
+        onLoad(moduleConfig) {
+            logMsg("[Kick Webview Command] Module loaded successfully.");
+            setTimeout(startObservingTriggers, 500);
+        },
+        onUnload() {
+            logMsg("[Kick Webview Command] Module unloaded.");
+            stopObservingTriggers();
+        },
+        openLogin() {
+            if (window.__TAURI__) {
+                logMsg("[Kick Webview Command] Opening visible Kick login webview...");
+                window.__TAURI__.core.invoke('open_service_login', {
+                    url: "https://kick.com",
+                    title: "Kick Login - Theater"
+                }).catch(err => {
+                    logMsg(`[Kick Webview Command Error] Failed to open login window: ${err}`, true);
+                });
+            } else {
+                logMsg("[Kick Webview Command Warning] Not running in Tauri. Opening Kick login page in browser tab...", true);
+                window.open("https://kick.com", "_blank");
+            }
+        }
+    });
+
+    async function updateKickStreamInfoWebview(title, categoryName) {
+        if (!window.__TAURI__) {
+            logMsg("[Kick Webview Command Error] Tauri is not active. Hidden webview automation requires the desktop app.", true);
+            return;
+        }
+
+        const mod = window.TheaterController.modules[MODULE_ID];
+        const username = (mod && mod.config && mod.config.broadcaster_id || "").trim().toLowerCase();
+        if (!username) {
+            logMsg("[Kick Webview Command Error] Cannot update stream info: Broadcaster username configuration is empty.", true);
+            return;
+        }
+
+        logMsg(`[Kick Webview Command] Initiating stream info update (Title: "${title}", Category: "${categoryName}")...`);
+        const url = `https://dashboard.kick.com/popout/${username}/stream-info`;
+
+        const jsCode = `
+(async function() {
+    const targetTitle = ${JSON.stringify(title)};
+    const targetCategory = ${JSON.stringify(categoryName)};
+    
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    
+    const setNativeValue = (element, value) => {
+        const valueSetter = Object.getOwnPropertyDescriptor(
+            element.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype, 
+            'value'
+        )?.set;
+        if (valueSetter) {
+            valueSetter.call(element, value);
+        } else {
+            element.value = value;
+        }
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+
+    // 1. Dismiss cookie banner if present
+    const cookieBtn = document.querySelector('button[data-testid="accept-cookies"]');
+    if (cookieBtn) {
+        cookieBtn.click();
+        await delay(1000);
+    }
+    
+    // 2. Open edit dialog if not already open
+    let titleEl = document.querySelector('textarea[name="title"]');
+    if (!titleEl) {
+        const editBtn = document.querySelector('button[aria-haspopup="dialog"]');
+        if (editBtn) {
+            editBtn.click();
+            for (const name of ['mousedown', 'mouseup', 'click']) {
+                editBtn.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, view: window }));
+            }
+            // Wait up to 5 seconds for dialog to load
+            for (let i = 0; i < 50; i++) {
+                titleEl = document.querySelector('textarea[name="title"]');
+                if (titleEl) break;
+                await delay(100);
+            }
+        }
+    }
+    
+    if (!titleEl) {
+        console.error("Edit form title textarea not found");
+        return;
+    }
+    
+    // 3. Set title using native setter to bypass React interception
+    if (targetTitle) {
+        setNativeValue(titleEl, targetTitle);
+        await delay(500);
+    }
+    
+    // 4. Open category search dropdown
+    if (targetCategory && targetCategory !== 'none') {
+        let categoryBtn = Array.from(document.querySelectorAll('label')).find(l => l.textContent.includes('Category*'))?.nextElementSibling;
+        if (!categoryBtn || categoryBtn.tagName !== 'BUTTON') {
+            categoryBtn = document.querySelector('button[aria-haspopup="dialog"]'); // fallback
+        }
+        
+        if (categoryBtn) {
+            categoryBtn.click();
+            for (const name of ['mousedown', 'mouseup', 'click']) {
+                categoryBtn.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, view: window }));
+            }
+            
+            // Wait up to 5 seconds for Category search input to appear
+            let searchInput = null;
+            for (let i = 0; i < 50; i++) {
+                searchInput = document.querySelector('input[placeholder="Search category..."]');
+                if (searchInput) break;
+                await delay(100);
+            }
+            
+            if (searchInput) {
+                // 5. Type category search query (part before & to prevent Kick API search issues)
+                const searchQuery = targetCategory.includes('&') ? targetCategory.split('&')[0].trim() : targetCategory;
+                
+                // Simulate sequential typing using native setter to trigger React handlers
+                searchInput.focus();
+                let currentVal = '';
+                for (let j = 0; j < searchQuery.length; j++) {
+                    const char = searchQuery[j];
+                    currentVal += char;
+                    setNativeValue(searchInput, currentVal);
+                    searchInput.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true }));
+                    searchInput.dispatchEvent(new KeyboardEvent('keyup', { key: char, bubbles: true }));
+                    await delay(100);
+                }
+                
+                // Wait for search results
+                await delay(1500);
+                
+                // Find and click matched option
+                const options = Array.from(document.querySelectorAll('[role="option"], [cmdk-item], .cmdk-item'));
+                let matchedOption = options.find(opt => opt.textContent.trim().toLowerCase() === targetCategory.toLowerCase());
+                if (!matchedOption && options.length > 0) {
+                    matchedOption = options[0]; // fallback to first result
+                }
+                
+                if (matchedOption) {
+                    matchedOption.click();
+                    for (const name of ['mousedown', 'mouseup', 'click']) {
+                        matchedOption.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, view: window }));
+                    }
+                    await delay(1000);
+                } else {
+                    console.error("Category option not found for: " + targetCategory);
+                }
+            } else {
+                console.error("Category search input not found");
+            }
+        } else {
+            console.error("Category button not found");
+        }
+    }
+    
+    // 6. Click Save button
+    const saveBtn = Array.from(document.querySelectorAll('button[type="submit"]')).find(b => b.textContent.includes('Save'));
+    if (saveBtn) {
+        // Wait until Save button is enabled
+        for (let i = 0; i < 50; i++) {
+            const isDisabled = saveBtn.disabled || saveBtn.getAttribute('aria-disabled') === 'true';
+            if (!isDisabled) {
+                saveBtn.click();
+                for (const name of ['mousedown', 'mouseup', 'click']) {
+                    saveBtn.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, view: window }));
+                }
+                console.log("Metadata save clicked");
+                break;
+            }
+            await delay(100);
+        }
+    } else {
+        console.error("Save button not found");
+    }
+})();
+`;
+
+        window.__TAURI__.core.invoke('open_hidden_webview', {
+            url: url,
+            js: jsCode,
+            delayMs: 6000,
+            closeDelayMs: 15000
+        }).then(() => {
+            logMsg("[Kick Webview Command] Hidden webview stream update process initiated successfully.");
+        }).catch(err => {
+            logMsg(`[Kick Webview Command Error] Failed to launch webview: ${err}`, true);
+        });
+    }
+
+    async function sendKickMessageWebview(message) {
+        if (!window.__TAURI__) {
+            logMsg("[Kick Webview Command Error] Tauri is not active. Hidden webview automation requires the desktop app.", true);
+            return;
+        }
+
+        const mod = window.TheaterController.modules[MODULE_ID];
+        const username = (mod && mod.config && mod.config.broadcaster_id || "").trim().toLowerCase();
+        if (!username) {
+            logMsg("[Kick Webview Command Error] Cannot send chat message: Broadcaster username configuration is empty.", true);
+            return;
+        }
+
+        logMsg(`[Kick Webview Command] Initiating chat message/command send: "${message}"...`);
+        const url = `https://kick.com/popout/${username}/chat`;
+
+        const jsCode = `
+(async function() {
+    const message = ${JSON.stringify(message)};
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    
+    // 1. Locate chat input
+    const el = document.querySelector('div[data-testid="chat-input"]');
+    if (!el) {
+        console.error("Chat input not found");
+        return;
+    }
+    
+    // 2. Focus and clear input
+    el.focus();
+    await delay(100);
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+    await delay(100);
+    
+    // 3. Type text
+    const isCommand = message.startsWith('/');
+    if (isCommand) {
+        // Type character-by-character to trigger Lexical's internal command parsing
+        for (let i = 0; i < message.length; i++) {
+            const char = message[i];
+            document.execCommand('insertText', false, char);
+            el.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent('keypress', { key: char, bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+            await delay(50);
+        }
+        await delay(500); // Wait for autocomplete popup to show/settle
+        
+        // Press Enter once to select the command from the popover
+        el.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
+        }));
+        await delay(300);
+    } else {
+        // Insert all at once for speed
+        document.execCommand('insertText', false, message);
+        await delay(200);
+    }
+    
+    // 4. Click the green Chat button to submit
+    const btn = document.getElementById('send-message-button');
+    if (btn && !btn.disabled) {
+        for (const name of ['mousedown', 'mouseup', 'click']) {
+            btn.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, view: window }));
+        }
+        await delay(200);
+    }
+    
+    // 5. Fallback: If input is still not empty, dispatch Enter key
+    if (el.textContent && el.textContent.trim().length > 0) {
+        const events = ['keydown', 'keypress', 'keyup'];
+        for (const name of events) {
+            el.dispatchEvent(new KeyboardEvent(name, {
+                key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
+            }));
+        }
+    }
+    console.log("Chat message/command dispatched");
+})();
+`;
+
+        window.__TAURI__.core.invoke('open_hidden_webview', {
+            url: url,
+            js: jsCode,
+            delayMs: 6000,
+            closeDelayMs: 6000
+        }).then(() => {
+            logMsg("[Kick Webview Command] Hidden webview chat process initiated successfully.");
+        }).catch(err => {
+            logMsg(`[Kick Webview Command Error] Failed to launch webview: ${err}`, true);
+        });
+    }
+
+    // Helper to resolve variables
+    const resolveVariable = (txt, matches, payload) => {
+        if (!txt) return "";
+        return window.TheaterController.replaceVariables ?
+            window.TheaterController.replaceVariables(txt, matches, payload) :
+            txt;
+    };
+
+    // Register Command: Unified Kick Webview Action
+    window.TheaterController.registerCommand("kick_webview", async (inputs, matches, payload) => {
+        const commandType = inputs.commandType || "send_message";
+        const resolve = (txt) => {
+            if (!txt) return "";
+            return window.TheaterController.replaceVariables ?
+                window.TheaterController.replaceVariables(txt, matches, payload) :
+                txt;
+        };
+
+        if (commandType === 'send_message') {
+            const msg = resolve(inputs.message);
+            if (msg) {
+                sendKickMessageWebview(msg);
+            }
+        } else if (commandType === 'ban_user') {
+            const target = resolve(inputs.targetUser).trim();
+            const reason = resolve(inputs.reason).trim();
+            if (target) {
+                const cmd = reason ? `/ban ${target} ${reason}` : `/ban ${target}`;
+                sendKickMessageWebview(cmd);
+            }
+        } else if (commandType === 'timeout_user') {
+            const target = resolve(inputs.targetUser).trim();
+            const duration = resolve(inputs.duration).trim() || "10";
+            const reason = resolve(inputs.reason).trim();
+            if (target) {
+                const cmd = reason ? `/timeout ${target} ${duration} ${reason}` : `/timeout ${target} ${duration}`;
+                sendKickMessageWebview(cmd);
+            }
+        } else if (commandType === 'unban_user') {
+            const target = resolve(inputs.targetUser).trim();
+            if (target) {
+                sendKickMessageWebview(`/unban ${target}`);
+            }
+        } else if (commandType === 'clear_chat') {
+            sendKickMessageWebview("/clear");
+        } else if (commandType === 'add_moderator') {
+            const target = resolve(inputs.targetUser).trim();
+            if (target) {
+                sendKickMessageWebview(`/mod ${target}`);
+            }
+        } else if (commandType === 'remove_moderator') {
+            const target = resolve(inputs.targetUser).trim();
+            if (target) {
+                sendKickMessageWebview(`/unmod ${target}`);
+            }
+        } else if (commandType === 'add_vip') {
+            const target = resolve(inputs.targetUser).trim();
+            if (target) {
+                sendKickMessageWebview(`/vip ${target}`);
+            }
+        } else if (commandType === 'remove_vip') {
+            const target = resolve(inputs.targetUser).trim();
+            if (target) {
+                sendKickMessageWebview(`/unvip ${target}`);
+            }
+        } else if (commandType === 'update_stream') {
+            const title = resolve(inputs.title);
+            const category = resolve(inputs.category || inputs.categoryId || inputs.fallbackCategory);
+            updateKickStreamInfoWebview(title, category);
+        }
+    }, {
+        label: "Kick (Webview): Action / Command",
+        fields: [
+            {
+                id: "commandType",
+                label: "Command Type",
+                type: "select",
+                options: [
+                    { value: "send_message", label: "Send Chat Message / Command" },
+                    { value: "ban_user", label: "Ban User" },
+                    { value: "timeout_user", label: "Timeout User" },
+                    { value: "unban_user", label: "Unban User" },
+                    { value: "clear_chat", label: "Clear Chat" },
+                    { value: "add_moderator", label: "Add Moderator (/mod)" },
+                    { value: "remove_moderator", label: "Remove Moderator (/unmod)" },
+                    { value: "add_vip", label: "Add VIP (/vip)" },
+                    { value: "remove_vip", label: "Remove VIP (/unvip)" },
+                    { value: "update_stream", label: "Update Stream Metadata" }
+                ],
+                default: "send_message"
+            },
+            {
+                id: "message",
+                label: "Message Text / Command (e.g. Hello!)",
+                type: "text",
+                default: "",
+                style: "grid-column: 1 / -1;"
+            },
+            {
+                id: "targetUser",
+                label: "Target Username",
+                type: "text",
+                default: "{username}"
+            },
+            {
+                id: "reason",
+                label: "Reason (Optional)",
+                type: "text",
+                default: ""
+            },
+            {
+                id: "duration",
+                label: "Timeout Duration (Minutes)",
+                type: "text",
+                default: "10"
+            },
+            {
+                id: "title",
+                label: "Stream Title",
+                type: "text",
+                default: "",
+                style: "grid-column: 1 / -1;"
+            },
+            {
+                id: "categoryId",
+                label: "Stream Category (Name)",
+                type: "text",
+                default: ""
+            }
+        ]
+    }, MODULE_ID);
+
+})();

@@ -1,0 +1,347 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "theatre_360";
+    
+    var masterSource = "";
+    var masterFilter = "";
+    var state = { pan: 0, tilt: 0, fov: 90 };
+    var isSpinning = false;
+    var spinSpeed = 1.0;
+    var spinSmoothing = 0.5;
+    var spinInterval = null;
+
+    // Register TCP Module
+    window.TheaterController.registerModule(MODULE_ID, {
+        name: "Theatre 360 Direct",
+        description: "Controls OBS 360 virtual camera panning, tilting, FOV, and spin animations. Reuses the global OBS WebSocket connection.",
+        configFields: [],
+        onLoad(moduleConfig) {
+            logMsg("[Theatre360] Module loaded successfully.");
+            createRemotePanel();
+            
+            // Listen to OBS events to update UI state
+            if (window.obs) {
+                window.obs.on('ConnectionOpened', handleOBSStateChange);
+                window.obs.on('Identified', handleOBSStateChange);
+                window.obs.on('ConnectionClosed', handleOBSStateChange);
+            }
+            
+            // Periodically check/sync filter
+            setTimeout(async () => {
+                if (isOBSConnected()) {
+                    await scanForFilter();
+                    handleOBSStateChange();
+                }
+            }, 1000);
+        },
+        onUnload() {
+            logMsg("[Theatre360] Module unloaded.");
+            stopSpin();
+            
+            if (window.obs) {
+                window.obs.off('ConnectionOpened', handleOBSStateChange);
+                window.obs.off('Identified', handleOBSStateChange);
+                window.obs.off('ConnectionClosed', handleOBSStateChange);
+            }
+
+            // Clean up window globals
+            delete window.updateValues;
+            delete window.stopSpin;
+            delete window.copyT360Coords;
+            delete window.resetCamera;
+            delete window.saveRawT360;
+
+            const panel = document.getElementById('t360_remote_container');
+            if (panel && panel.parentNode) {
+                panel.parentNode.removeChild(panel);
+            }
+        }
+    });
+
+    // Expose interaction handlers to window context for inline HTML attributes
+    window.updateValues = updateValues;
+    window.stopSpin = stopSpin;
+    window.copyT360Coords = copyT360Coords;
+    window.resetCamera = resetCamera;
+
+    function isOBSConnected() {
+        const dot = document.getElementById('obs-dot');
+        return dot && dot.classList.contains('connected');
+    }
+
+    function handleOBSStateChange() {
+        const setupScreen = document.getElementById('setupScreen');
+        const remoteScreen = document.getElementById('remoteScreen');
+        if (!setupScreen || !remoteScreen) return;
+
+        if (isOBSConnected()) {
+            setupScreen.style.display = 'none';
+            remoteScreen.style.display = 'block';
+            scanForFilter();
+        } else {
+            setupScreen.style.display = 'block';
+            remoteScreen.style.display = 'none';
+            stopSpin();
+        }
+    }
+
+    async function scanForFilter() {
+        if (!window.obs || !isOBSConnected()) return false;
+        try {
+            const { inputs } = await window.obs.call('GetInputList');
+            const { scenes } = await window.obs.call('GetSceneList');
+            let targets = [...(inputs || []), ...(scenes || [])];
+            for (const t of targets) {
+                const name = t.inputName || t.sceneName;
+                const { filters } = await window.obs.call('GetSourceFilterList', { sourceName: name });
+                if (filters) {
+                    for (const f of filters) {
+                        if (f.filterKind === 'theatre_360_master_filter') {
+                            masterSource = name;
+                            masterFilter = f.filterName;
+                            const targetInfo = document.getElementById('targetInfo');
+                            if (targetInfo) targetInfo.innerText = name;
+                            return true;
+                        }
+                    }
+                }
+            }
+        } catch (e) {}
+        const targetInfo = document.getElementById('targetInfo');
+        if (targetInfo) targetInfo.innerText = "No Filter Found";
+        return false;
+    }
+
+    function updateValues(key, val) {
+        state[key] = parseFloat(val);
+        const valEl = document.getElementById(key + 'Val');
+        if (valEl) {
+            valEl.innerText = state[key].toFixed(key === 'fov' ? 0 : 1) + "°";
+        }
+        updateOBS();
+    }
+
+    function stopSpin() {
+        isSpinning = false;
+        if (spinInterval) { clearInterval(spinInterval); spinInterval = null; }
+    }
+
+    function updateOBS(customSmoothing = 0) {
+        if (!window.obs || !isOBSConnected() || !masterSource) return;
+        window.obs.call('SetSourceFilterSettings', {
+            sourceName: masterSource,
+            filterName: masterFilter,
+            filterSettings: { pan: state.pan, tilt: state.tilt, fov: state.fov, smoothing: customSmoothing }
+        }).catch(e => {});
+    }
+
+    async function handleSAMMICommand(command, data) {
+        if (!window.obs || !isOBSConnected()) return;
+        if (!masterSource) await scanForFilter();
+        if (!masterSource) return;
+        
+        if (command === 'Theatre360_SetView') {
+            stopSpin();
+            let targetPan = parseFloat(data.pan || 0);
+            let targetTilt = parseFloat(data.tilt || 0);
+            let targetFov = parseFloat(data.fov || 90);
+
+            if (data.moveType === "Progressive" || data.moveType === "Regressive") {
+                try {
+                    const { filterSettings } = await window.obs.call('GetSourceFilterSettings', { sourceName: masterSource, filterName: masterFilter });
+                    if (data.moveType === "Progressive") {
+                        targetPan += (filterSettings.pan || 0);
+                        targetTilt += (filterSettings.tilt || 0);
+                        targetFov += (filterSettings.fov || 90);
+                    } else {
+                        targetPan = (filterSettings.pan || 0) - targetPan;
+                        targetTilt = (filterSettings.tilt || 0) - targetTilt;
+                        targetFov = (filterSettings.fov || 90) - targetFov;
+                    }
+                } catch (e) {}
+            }
+            if (targetPan > 180) targetPan -= 360;
+            if (targetPan < -180) targetPan += 360;
+
+            const settings = { pan: targetPan, tilt: targetTilt, fov: targetFov };
+            settings.smoothing = (data.moveType === "Instant") ? 0 : parseFloat(data.smoothing || 0);
+            
+            state.pan = targetPan; state.tilt = targetTilt; state.fov = targetFov;
+            
+            const panS = document.getElementById('panSlider');
+            const tiltS = document.getElementById('tiltSlider');
+            const fovS = document.getElementById('fovSlider');
+            if (panS) panS.value = targetPan;
+            if (tiltS) tiltS.value = targetTilt;
+            if (fovS) fovS.value = targetFov;
+            
+            const panV = document.getElementById('panVal');
+            const tiltV = document.getElementById('tiltVal');
+            const fovV = document.getElementById('fovVal');
+            if (panV) panV.innerText = state.pan.toFixed(1) + "°";
+            if (tiltV) tiltV.innerText = state.tilt.toFixed(1) + "°";
+            if (fovV) fovV.innerText = state.fov.toFixed(0) + "°";
+            
+            window.obs.call('SetSourceFilterSettings', { sourceName: masterSource, filterName: masterFilter, filterSettings: settings });
+        } else if (command === 'Theatre360_Spin') {
+            if (data.status === 'On') {
+                isSpinning = true;
+                spinSpeed = parseFloat(data.speed || 1);
+                spinSmoothing = parseFloat(data.smoothing === undefined ? 0.5 : data.smoothing);
+                state.fov = parseFloat(data.fov || 90);
+                
+                const fovS = document.getElementById('fovSlider');
+                const fovV = document.getElementById('fovVal');
+                if (fovS) fovS.value = state.fov;
+                if (fovV) fovV.innerText = state.fov.toFixed(0) + "°";
+                
+                if (!spinInterval) {
+                    spinInterval = setInterval(() => {
+                        if (!isSpinning || !isOBSConnected()) { stopSpin(); return; }
+                        state.pan = (state.pan + spinSpeed);
+                        if (state.pan > 180) state.pan -= 360;
+                        if (state.pan < -180) state.pan += 360;
+                        
+                        const panS = document.getElementById('panSlider');
+                        const panV = document.getElementById('panVal');
+                        if (panS) panS.value = state.pan;
+                        if (panV) panV.innerText = state.pan.toFixed(1) + "°";
+                        
+                        updateOBS(spinSmoothing);
+                    }, 100);
+                }
+            } else { stopSpin(); }
+        }
+    }
+
+    function resetCamera() {
+        stopSpin();
+        state.pan = 0; state.tilt = 0; state.fov = 90;
+        
+        const panS = document.getElementById('panSlider');
+        const tiltS = document.getElementById('tiltSlider');
+        const fovS = document.getElementById('fovSlider');
+        if (panS) panS.value = 0;
+        if (tiltS) tiltS.value = 0;
+        if (fovS) fovS.value = 90;
+        
+        const panV = document.getElementById('panVal');
+        const tiltV = document.getElementById('tiltVal');
+        const fovV = document.getElementById('fovVal');
+        if (panV) panV.innerText = "0.0°";
+        if (tiltV) tiltV.innerText = "0.0°";
+        if (fovV) fovV.innerText = "90°";
+        
+        updateOBS();
+    }
+
+    function copyT360Coords() {
+        const text = JSON.stringify({ pan: state.pan.toFixed(2), tilt: state.tilt.toFixed(2), fov: state.fov }, null, 2);
+        navigator.clipboard.writeText(text);
+        logMsg("[Theatre360] Coordinates copied to clipboard.");
+    }
+
+    function createRemotePanel() {
+        const container = document.getElementById('loaded-modules-container');
+        if (!container) return;
+        
+        const cardHeaders = container.querySelectorAll('.command-row-header strong');
+        let ourCard = null;
+        cardHeaders.forEach(header => {
+            if (header.innerText === "Theatre 360 Direct") {
+                ourCard = header.closest('.command-row');
+            }
+        });
+        
+        if (!ourCard) return;
+        
+        let panel = ourCard.querySelector('#t360_remote_container');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 't360_remote_container';
+            panel.style.marginTop = '15px';
+            panel.style.background = '#111';
+            panel.style.padding = '15px';
+            panel.style.borderRadius = '6px';
+            panel.style.border = '1px solid #333';
+            ourCard.appendChild(panel);
+        }
+        
+        panel.innerHTML = `
+            <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 8px;">
+                <div id="setupScreen" style="display: block; text-align: center; padding: 15px 0;">
+                    <p style="color: #ff9933; margin: 0 0 10px 0; font-size: 0.9em; font-weight: bold;">⚠️ OBS Client Disconnected</p>
+                    <p style="color: #888; font-size: 0.8em; margin: 0;">Please connect to your OBS WebSocket in the top-right header settings panel to enable camera controls.</p>
+                </div>
+
+                <div id="remoteScreen" style="display: none;">
+                    <div style="margin-bottom: 10px; text-align: left;">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; font-weight: 600; margin-bottom: 4px;">
+                            <span>PAN:</span>
+                            <span style="color: #00ffcc;" id="panVal">0.0°</span>
+                        </div>
+                        <input type="range" id="panSlider" min="-180" max="180" step="0.1" value="0" style="width: 100%;" oninput="updateValues('pan', this.value); stopSpin()">
+                    </div>
+                    <div style="margin-bottom: 10px; text-align: left;">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; font-weight: 600; margin-bottom: 4px;">
+                            <span>TILT:</span>
+                            <span style="color: #00ffcc;" id="tiltVal">0.0°</span>
+                        </div>
+                        <input type="range" id="tiltSlider" min="-90" max="90" step="0.1" value="0" style="width: 100%;" oninput="updateValues('tilt', this.value); stopSpin()">
+                    </div>
+                    <div style="margin-bottom: 10px; text-align: left;">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; font-weight: 600; margin-bottom: 4px;">
+                            <span>FOV:</span>
+                            <span style="color: #00ffcc;" id="fovVal">90°</span>
+                        </div>
+                        <input type="range" id="fovSlider" min="10" max="170" step="1" value="90" style="width: 100%;" oninput="updateValues('fov', this.value)">
+                    </div>
+                    
+                    <div style="display: flex; justify-content: space-between; opacity: 0.6; font-size: 0.7rem; margin-top: 12px; border-top: 1px solid #222; padding-top: 8px;">
+                        <span>TARGET FILTER SOURCE:</span>
+                        <span id="targetInfo" style="color: #00ffcc; font-weight: bold;">Scanning...</span>
+                    </div>
+                    <button class="btn-green" style="width: 100%; margin-top: 12px; background: rgba(255,255,255,0.05); border: 1px solid #444; color: #fff; font-size: 0.85em;" onclick="copyT360Coords()">COPY COORDINATES</button>
+                    <button class="btn-green" style="width: 100%; margin-top: 6px; background: rgba(255,255,255,0.02); border: 1px solid #333; color: #aaa; font-size: 0.8em;" onclick="resetCamera()">RESET VIEW</button>
+                </div>
+            </div>
+        `;
+        
+        handleOBSStateChange();
+    }
+
+    // Register Command bindings for trigger cards automation
+    window.TheaterController.registerCommand("theatre360_set_view", (inputs) => {
+        handleSAMMICommand('Theatre360_SetView', inputs);
+    }, {
+        label: "T360: Set Camera View",
+        fields: [
+            { id: "moveType", label: "Movement Type", type: "select", options: [
+                { value: "Instant", label: "Instant" },
+                { value: "Smooth", label: "Smooth" },
+                { value: "Progressive", label: "Progressive" },
+                { value: "Regressive", label: "Regressive" }
+            ], default: "Instant" },
+            { id: "pan", label: "Pan Degrees (-180 to 180)", type: "number", default: 0 },
+            { id: "tilt", label: "Tilt Degrees (-90 to 90)", type: "number", default: 0 },
+            { id: "fov", label: "FOV Value (10 to 170)", type: "number", default: 90 },
+            { id: "smoothing", label: "Smoothing (0 to 1)", type: "number", default: 0 }
+        ]
+    }, MODULE_ID);
+
+    window.TheaterController.registerCommand("theatre360_spin", (inputs) => {
+        handleSAMMICommand('Theatre360_Spin', inputs);
+    }, {
+        label: "T360: Spin Camera",
+        fields: [
+            { id: "status", label: "Spin Status", type: "select", options: [
+                { value: "On", label: "On" },
+                { value: "Off", label: "Off" }
+            ], default: "Off" },
+            { id: "speed", label: "Speed Step", type: "number", default: 1 },
+            { id: "fov", label: "FOV Value", type: "number", default: 90 },
+            { id: "smoothing", label: "Smoothing (0 to 1)", type: "number", default: 0.5 }
+        ]
+    }, MODULE_ID);
+
+})();

@@ -1,0 +1,282 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "beatsaber_controller";
+    let socketClient = null;
+    let hudInterval = null;
+
+    let currentSong = null;
+    let currentPerformance = null;
+    let socketState = "Disconnected";
+
+
+
+    class BeatSaberSocketClient {
+        constructor(url) {
+            this.url = url;
+            this.websocket = null;
+            this.reconnectAttempts = 0;
+            this.maxReconnectAttempts = 999; // Keep trying to reconnect while BS is closed
+            this.reconnectInterval = 5000;
+            this.reconnectTimer = null;
+            this.terminateRequested = false;
+        }
+
+        connect() {
+            if (this.websocket && (this.websocket.readyState === WebSocket.OPEN || this.websocket.readyState === WebSocket.CONNECTING)) {
+                return;
+            }
+
+            socketState = "Connecting";
+            updateBeatSaberHUD();
+
+            try {
+                this.websocket = new WebSocket(this.url);
+            } catch (e) {
+                socketState = "Disconnected";
+                updateBeatSaberHUD();
+                this.tryReconnect();
+                return;
+            }
+
+            this.websocket.onopen = () => {
+                socketState = "Connected";
+                this.reconnectAttempts = 0;
+                logMsg("[BeatSaber] Connected to HttpSiraStatus successfully.");
+                clearTimeout(this.reconnectTimer);
+                updateBeatSaberHUD();
+            };
+
+            this.websocket.onmessage = (event) => {
+                try {
+                    const parsed = JSON.parse(event.data);
+                    if (parsed.event) {
+                        const eventName = parsed.event;
+                        const statusObj = parsed.status || {};
+                        
+                        // Update tracking variables
+                        if (eventName === "hello" || eventName === "songStart" || eventName === "resume" || eventName === "pause") {
+                            currentSong = statusObj.beatmap;
+                        }
+                        if (eventName === "menu" || eventName === "finished" || eventName === "failed" || eventName === "songQuit") {
+                            currentSong = null;
+                            currentPerformance = null;
+                        }
+                        
+                        if (statusObj.performance) {
+                            currentPerformance = statusObj.performance;
+                        }
+                        
+                        updateBeatSaberHUD();
+
+                        // Build eventData matching payload
+                        const eventData = {
+                            eventName: eventName,
+                            combo: currentPerformance ? currentPerformance.combo : 0,
+                            score: currentPerformance ? currentPerformance.score : 0,
+                            energy: currentPerformance ? currentPerformance.energy : 0
+                        };
+
+                        // Build deep JSON payload variables
+                        const payload = {
+                            username: "BeatSaber",
+                            message: eventName,
+                            customData: Object.assign({ raw: event.data }, parsed)
+                        };
+
+                        // Dispatch trigger to TheaterController
+                        if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                            window.TheaterController.dispatchTrigger("beatsaber_event", eventData, payload);
+                        }
+                    }
+                } catch (e) {}
+            };
+
+            this.websocket.onerror = (error) => {
+                logMsg("[BeatSaber Error] WebSocket encountered an error.", true);
+            };
+
+            this.websocket.onclose = () => {
+                socketState = "Disconnected";
+                currentSong = null;
+                currentPerformance = null;
+                updateBeatSaberHUD();
+                this.tryReconnect();
+            };
+        }
+
+        tryReconnect() {
+            if (this.terminateRequested) return;
+            if (this.reconnectTimer) return; // Reconnect is already scheduled
+
+            if (this.reconnectAttempts < this.maxReconnectAttempts) {
+                this.reconnectAttempts++;
+                this.reconnectTimer = setTimeout(() => {
+                    this.reconnectTimer = null;
+                    if (!this.websocket || this.websocket.readyState === WebSocket.CLOSED) {
+                        this.connect();
+                    }
+                }, this.reconnectInterval);
+            }
+        }
+
+        terminate() {
+            this.terminateRequested = true;
+            clearTimeout(this.reconnectTimer);
+            if (this.websocket) {
+                this.websocket.onopen = null;
+                this.websocket.onmessage = null;
+                this.websocket.onerror = null;
+                this.websocket.onclose = null;
+                if (this.websocket.readyState === WebSocket.OPEN || this.websocket.readyState === WebSocket.CONNECTING) {
+                    this.websocket.close();
+                }
+            }
+            socketState = "Disconnected";
+            currentSong = null;
+            currentPerformance = null;
+        }
+    }
+
+    function updateBeatSaberHUD() {
+        const container = document.getElementById('loaded-modules-container');
+        if (!container) return;
+        
+        const cardHeaders = container.querySelectorAll('.command-row-header strong');
+        let ourCard = null;
+        cardHeaders.forEach(header => {
+            if (header.innerText === "Beat Saber Controller") {
+                ourCard = header.closest('.command-row');
+            }
+        });
+        
+        if (!ourCard) return;
+        
+        let hudDiv = ourCard.querySelector('#beatsaber-status-hud');
+        if (!hudDiv) {
+            hudDiv = document.createElement('div');
+            hudDiv.id = 'beatsaber-status-hud';
+            hudDiv.style.marginTop = '15px';
+            hudDiv.style.background = '#111';
+            hudDiv.style.padding = '12px';
+            hudDiv.style.borderRadius = '6px';
+            hudDiv.style.border = '1px solid #333';
+            ourCard.appendChild(hudDiv);
+        }
+
+        const statusColor = socketState === "Connected" ? "#4caf50" : (socketState === "Connecting" ? "#ffeb3b" : "#f44336");
+        let content = `
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #222; padding-bottom: 8px; margin-bottom: 8px;">
+                <span style="font-size: 0.85em; color: #888; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">Beat Saber Connection</span>
+                <span style="font-size: 0.85em; color: ${statusColor}; font-weight: bold;">● ${socketState}</span>
+            </div>
+        `;
+
+        if (socketState === "Connected" && currentSong) {
+            const artist = currentSong.songAuthorName || "Unknown Artist";
+            const songName = currentSong.songName || "Unknown Song";
+            const difficulty = currentSong.difficulty || "Normal";
+            
+            let perfHTML = "";
+            if (currentPerformance) {
+                const score = currentPerformance.score || 0;
+                const combo = currentPerformance.combo || 0;
+                const energy = Math.round((currentPerformance.energy || 0) * 100);
+                perfHTML = `
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; background: rgba(255,255,255,0.02); padding: 8px; border-radius: 4px; text-align: center; border: 1px solid #222;">
+                        <div>
+                            <div style="font-size: 0.7em; color: #666; text-transform: uppercase; font-weight: bold;">Score</div>
+                            <div style="font-size: 1.1em; color: #fff; font-weight: bold; font-family: monospace;">${score}</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.7em; color: #666; text-transform: uppercase; font-weight: bold;">Combo</div>
+                            <div style="font-size: 1.1em; color: var(--accent); font-weight: bold; font-family: monospace;">${combo}</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.7em; color: #666; text-transform: uppercase; font-weight: bold;">Energy</div>
+                            <div style="font-size: 1.1em; color: ${energy < 25 ? '#f44336' : '#4caf50'}; font-weight: bold; font-family: monospace;">${energy}%</div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            content += `
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <div style="flex-grow: 1;">
+                        <div style="font-size: 1.05em; color: #fff; font-weight: bold; word-break: break-all;">${songName}</div>
+                        <div style="font-size: 0.85em; color: #aaa; margin-top: 2px;">${artist}</div>
+                        <div style="margin-top: 6px;"><span style="display: inline-block; padding: 2px 8px; border-radius: 20px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; font-size: 0.75em; font-weight: bold;">${difficulty}</span></div>
+                    </div>
+                </div>
+                ${perfHTML}
+            `;
+        } else if (socketState === "Connected") {
+            content += `<p style="color: #666; font-size: 0.85em; margin: 0; font-style: italic; text-align: center; padding: 10px 0;">Waiting for song to start...</p>`;
+        } else {
+            content += `<p style="color: #666; font-size: 0.85em; margin: 0; font-style: italic; text-align: center; padding: 10px 0;">Waiting for Beat Saber to launch... (Port 6557)</p>`;
+        }
+
+        hudDiv.innerHTML = content;
+    }
+
+    window.TheaterController.registerModule(MODULE_ID, {
+        name: "Beat Saber Controller",
+        description: "Connects to Beat Saber's HttpSiraStatus WebSocket client and triggers action sequences on song starts, hits, misses, or failures.",
+        configFields: [
+            { id: "socket_url", label: "Beat Saber HTTP Status URL", type: "text", default: "ws://localhost:6557/socket" }
+        ],
+        onLoad(moduleConfig) {
+            logMsg("[BeatSaber] Controller loaded. Connecting to WebSocket...");
+            const url = moduleConfig.socket_url || "ws://localhost:6557/socket";
+            socketClient = new BeatSaberSocketClient(url);
+            socketClient.connect();
+            hudInterval = setInterval(updateBeatSaberHUD, 2000);
+        },
+        onUnload() {
+            logMsg("[BeatSaber] Module unloaded. Terminating socket connection...");
+            clearInterval(hudInterval);
+            if (socketClient) {
+                socketClient.terminate();
+                socketClient = null;
+            }
+            const hudDiv = document.getElementById('beatsaber-status-hud');
+            if (hudDiv && hudDiv.parentNode) {
+                hudDiv.parentNode.removeChild(hudDiv);
+            }
+        }
+    });
+
+    // Register Custom Trigger
+    window.TheaterController.registerTrigger("beatsaber_event", 
+        // Matcher function
+        (t, eventData) => {
+            if (t.eventName !== eventData.eventName) return false;
+            if (t.minCombo && eventData.combo < t.minCombo) return false;
+            return true;
+        },
+        // UI Configuration
+        {
+            label: "Beat Saber Event",
+            fields: [
+                { 
+                    id: "eventName", 
+                    label: "Game Event", 
+                    type: "select", 
+                    options: [
+                        { value: "songStart", label: "Song Started" },
+                        { value: "noteCut", label: "Note Hit (Success)" },
+                        { value: "noteMissed", label: "Note Missed (Miss)" },
+                        { value: "bombCut", label: "Bomb Hit" },
+                        { value: "finished", label: "Song Finished" },
+                        { value: "failed", label: "Song Failed" },
+                        { value: "pause", label: "Song Paused" },
+                        { value: "resume", label: "Song Resumed" }
+                    ],
+                    default: "noteMissed"
+                },
+                { id: "minCombo", label: "Minimum Combo Filter (Optional)", type: "number", default: 0 }
+            ]
+        }, 
+        MODULE_ID
+    );
+
+})();

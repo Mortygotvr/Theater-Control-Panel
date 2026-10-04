@@ -1,0 +1,420 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "twitch_chat";
+    let currentConfig = {};
+    let twitchWS = null;
+    let isConnected = false;
+    let disconnectTimer = null;
+
+    // Polyfill window.saveConfig if it is missing in the control panel
+    if (!window.saveConfig) {
+        window.saveConfig = function() {
+            if (window.config) {
+                localStorage.setItem("obs_bridge_config", JSON.stringify(window.config));
+            }
+        };
+    }
+
+    // Hardcoded Client Credentials and Google Apps Script Proxy URL
+    const CLIENT_ID = "8di1qtifccgzrs1jvb6t6ddo8z9crv";
+    const REDIRECT_URI = "http://localhost:52246/";
+    const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzQx7bjEcYCwviBjFi5USE3q0-QfHNrcqrj0mJVgR38xVb-ogvL8BIIdthumOw7NaRc8A/exec";
+
+    const MODULE_DEFINITION = {
+        name: "Twitch Chat",
+        description: "Lightweight module to send automated chat messages to your Twitch room (reuses credentials from twitch_api and handles token refreshing).",
+        configFields: [
+            {
+                id: "broadcaster_id",
+                label: "Your Twitch Broadcaster Username (e.g. mortygotvr) <button class='btn-green' onclick='window.TheaterController.modules.twitch_chat.definition.authorizeApp()' style='margin-left: 10px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; display: inline-block; vertical-align: middle; border-radius: 4px; border: none;'>🔗 Connect Account</button>",
+                type: "text",
+                default: ""
+            }
+        ],
+        onLoad(moduleConfig) {
+            logMsg("[Twitch Chat] Module loaded successfully.");
+            currentConfig = moduleConfig;
+            
+            // Seed hardcoded credentials and proxy settings
+            currentConfig.client_id = CLIENT_ID;
+            currentConfig.redirect_uri = REDIRECT_URI;
+            currentConfig.google_script_url = GOOGLE_SCRIPT_URL;
+
+            // Auto-migrate/share settings from twitch_api module if twitch_chat is unconfigured
+            if (!currentConfig.broadcaster_id && window.config && window.config.modules && window.config.modules.twitch_api) {
+                logMsg("[Twitch Chat] Copying configuration from twitch_api module...");
+                const shared = window.config.modules.twitch_api;
+                for (const key in shared) {
+                    currentConfig[key] = shared[key];
+                }
+                if (!window.config.modules.twitch_chat) window.config.modules.twitch_chat = {};
+                Object.assign(window.config.modules.twitch_chat, shared);
+                if (window.saveConfig) window.saveConfig();
+            }
+
+            // Auto-exchange if auth_code is present but tokens are not
+            if (currentConfig.auth_code && (!currentConfig.access_token || !currentConfig.refresh_token)) {
+                logMsg("[Twitch Chat] Saved Authorization Code detected without tokens. Initiating exchange...");
+                setTimeout(() => {
+                    MODULE_DEFINITION.exchangeCode();
+                }, 1000);
+            }
+        },
+        onUnload() {
+            logMsg("[Twitch Chat] Module unloaded.");
+            clearTimeout(disconnectTimer);
+            if (twitchWS) {
+                try { twitchWS.close(); } catch(e) {}
+                twitchWS = null;
+            }
+            isConnected = false;
+            
+            // Clean up Tauri OAuth listener if active
+            if (window.twitchAuthUnlistenChat) {
+                try { window.twitchAuthUnlistenChat(); } catch (e) {}
+                window.twitchAuthUnlistenChat = null;
+            }
+        },
+
+        async authorizeApp() {
+            try {
+                const clientId = CLIENT_ID;
+                const redirectUri = REDIRECT_URI;
+                const state = Math.random().toString(36).substring(2, 15);
+                
+                localStorage.setItem("twitch_oauth_state_chat", state);
+
+                const scopes = [
+                    "chat:read",
+                    "chat:edit"
+                ].join(" ");
+
+                const authUrl = `https://id.twitch.tv/oauth2/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&state=${state}`;
+                
+                let isLoopback = false;
+                let loopbackPort = 52246;
+                try {
+                    const u = new URL(redirectUri);
+                    if ((u.hostname === "127.0.0.1" || u.hostname === "localhost") && u.port) {
+                        isLoopback = true;
+                        loopbackPort = parseInt(u.port, 10);
+                    }
+                } catch(e) {}
+
+                if (window.__TAURI__) {
+                    if (window.twitchAuthUnlistenChat) {
+                        try { window.twitchAuthUnlistenChat(); } catch (e) {}
+                        window.twitchAuthUnlistenChat = null;
+                    }
+
+                    if (isLoopback) {
+                        window.__TAURI__.event.listen('twitch-loopback-code-chat', (event) => {
+                            const path = event.payload;
+                            logMsg(`[Twitch Chat] Automatically captured loopback redirect: ${path}`);
+                            try {
+                                const urlObj = new URL("http://localhost" + path);
+                                const code = urlObj.searchParams.get('code');
+                                if (code) {
+                                    logMsg(`[Twitch Chat] Extracted authorization code: ${code}`);
+                                    currentConfig.auth_code = code;
+                                    
+                                    if (window.twitchAuthUnlistenChat) {
+                                        window.twitchAuthUnlistenChat();
+                                        window.twitchAuthUnlistenChat = null;
+                                    }
+
+                                    logMsg(`[Twitch Chat] Triggering automatic code exchange...`);
+                                    setTimeout(() => {
+                                        MODULE_DEFINITION.exchangeCode(code);
+                                    }, 500);
+                                }
+                            } catch(err) {
+                                logMsg(`[Twitch Chat Error] Failed to parse loopback redirect: ${err.message}`, true);
+                            }
+                        }).then(unlistenFn => {
+                            window.twitchAuthUnlistenChat = unlistenFn;
+                        });
+
+                        // Start Rust loopback server & open default system browser
+                        window.__TAURI__.core.invoke('start_loopback_listener', {
+                            port: loopbackPort,
+                            eventName: 'twitch-loopback-code-chat'
+                        }).catch(err => {
+                            logMsg(`[Twitch Chat Error] Failed to start loopback listener: ${err}`, true);
+                        });
+
+                        window.__TAURI__.core.invoke('open_in_browser', { url: authUrl }).catch(err => {
+                            logMsg(`[Twitch Chat Error] Failed to open default browser: ${err}`, true);
+                            window.open(authUrl, '_blank');
+                        });
+                    }
+                } else {
+                    window.open(authUrl, '_blank');
+                }
+            } catch (err) {
+                logMsg(`[Twitch Chat Error] Failed to start authorization: ${err.message}`, true);
+                alert(`Failed to start authorization flow: ${err.message}`);
+            }
+        },
+
+        async exchangeCode(code) {
+            const authCode = code || currentConfig.auth_code;
+            if (!authCode) {
+                alert("Please paste the Authorization Code first.");
+                return;
+            }
+
+            logMsg("[Twitch Chat] Exchanging authorization code for tokens...");
+
+            try {
+                logMsg(`[Twitch Chat] Routing exchange through Google Apps Script proxy: ${GOOGLE_SCRIPT_URL}`);
+                const response = await fetch(GOOGLE_SCRIPT_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'text/plain'
+                    },
+                    body: JSON.stringify({
+                        action: 'exchange',
+                        code: authCode,
+                        redirect_uri: REDIRECT_URI
+                    })
+                });
+
+                if (!response.ok) {
+                    const errText = await response.text();
+                    logMsg(`[Twitch Chat Error] OAuth exchange failed: ${response.status} ${response.statusText} - ${errText}`, true);
+                    alert(`OAuth exchange failed: ${response.statusText}`);
+                    return;
+                }
+
+                const data = await response.json();
+                if (data.error) {
+                    logMsg(`[Twitch Chat Error] Proxy exchange returned error: ${data.error_description || data.error}`, true);
+                    alert(`OAuth exchange failed: ${data.error_description || data.error}`);
+                    return;
+                }
+
+                if (data.access_token && data.refresh_token) {
+                    // Update configuration
+                    currentConfig.access_token = data.access_token;
+                    currentConfig.refresh_token = data.refresh_token;
+                    currentConfig.token_expires_at = Date.now() + (data.expires_in * 1000);
+
+                    if (window.config) {
+                        if (!window.config.modules) window.config.modules = {};
+                        if (!window.config.modules.twitch_chat) window.config.modules.twitch_chat = {};
+                        
+                        window.config.modules.twitch_chat.auth_code = authCode;
+                        window.config.modules.twitch_chat.access_token = data.access_token;
+                        window.config.modules.twitch_chat.refresh_token = data.refresh_token;
+                        window.config.modules.twitch_chat.token_expires_at = currentConfig.token_expires_at;
+                        if (window.saveConfig) window.saveConfig();
+                    }
+
+                    logMsg("[Twitch Chat] Tokens successfully generated and saved!");
+                    alert("OAuth setup successful! Your tokens have been generated and saved.");
+                } else {
+                    logMsg("[Twitch Chat Error] OAuth exchange response did not contain tokens.", true);
+                }
+            } catch (err) {
+                logMsg(`[Twitch Chat Error] Network error during OAuth exchange: ${err.message}`, true);
+                alert(`Network error during OAuth exchange: ${err.message}`);
+            }
+        }
+    };
+
+    // ─── Token Verification & Refresh Helper ──────────────────────────────────
+    async function getValidToken() {
+        let token = (currentConfig.access_token || "").trim();
+        const expiresAt = currentConfig.token_expires_at || 0;
+        
+        if (!token || Date.now() >= (expiresAt - 60000)) {
+            const refreshed = await refreshAccessToken();
+            if (!refreshed) {
+                logMsg("[Twitch Chat Error] OAuth token refresh failed. Please authorize again.", true);
+                return null;
+            }
+            token = currentConfig.access_token;
+        }
+        return token;
+    }
+
+    async function refreshAccessToken() {
+        const refreshToken = (currentConfig.refresh_token || "").trim();
+        if (!refreshToken) {
+            logMsg("[Twitch Chat Error] Cannot refresh token: Missing Refresh Token.", true);
+            return false;
+        }
+
+        logMsg("[Twitch Chat] Access token expired or missing. Refreshing tokens...");
+
+        try {
+            logMsg(`[Twitch Chat] Routing refresh through Google Apps Script proxy: ${GOOGLE_SCRIPT_URL}`);
+            const response = await fetch(GOOGLE_SCRIPT_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'text/plain'
+                },
+                body: JSON.stringify({
+                    action: 'refresh',
+                    refresh_token: refreshToken
+                })
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch Chat Error] Token refresh failed: ${response.status} ${response.statusText} - ${errText}`, true);
+                return false;
+            }
+
+            const data = await response.json();
+            if (data.error) {
+                logMsg(`[Twitch Chat Error] Proxy refresh returned error: ${data.error_description || data.error}`, true);
+                return false;
+            }
+
+            if (data.access_token) {
+                currentConfig.access_token = data.access_token;
+                currentConfig.refresh_token = data.refresh_token || refreshToken;
+                currentConfig.token_expires_at = Date.now() + (data.expires_in * 1000);
+
+                if (window.config) {
+                    if (!window.config.modules) window.config.modules = {};
+                    if (!window.config.modules.twitch_chat) window.config.modules.twitch_chat = {};
+                    
+                    window.config.modules.twitch_chat.access_token = currentConfig.access_token;
+                    window.config.modules.twitch_chat.refresh_token = currentConfig.refresh_token;
+                    window.config.modules.twitch_chat.token_expires_at = currentConfig.token_expires_at;
+                    if (window.saveConfig) window.saveConfig();
+                }
+
+                logMsg("[Twitch Chat] Tokens refreshed successfully!");
+                return true;
+            }
+            return false;
+        } catch (err) {
+            logMsg(`[Twitch Chat Error] Network error during token refresh: ${err.message}`, true);
+            return false;
+        }
+    }
+
+    // ─── Twitch Outbound Chat Sender ──────────────────────────────────────────
+    async function sendTwitchMessage(msg) {
+        const broadcasterSetting = (currentConfig.broadcaster_id || "").trim().toLowerCase();
+        if (!broadcasterSetting) {
+            logMsg("[Twitch Chat Error] Message not sent: Broadcaster setting is missing.", true);
+            return;
+        }
+
+        let token = await getValidToken();
+        if (!token) return;
+
+        // If WS is already open, send message and reset timer
+        if (twitchWS && twitchWS.readyState === WebSocket.OPEN && isConnected) {
+            twitchWS.send(`PRIVMSG #${broadcasterSetting} :${msg}`);
+            logMsg(`[Twitch Chat] Sent message: ${msg}`);
+            resetDisconnectTimer();
+            return;
+        }
+
+        // Connect on demand
+        logMsg(`[Twitch Chat] Connecting to Twitch Chat to send message...`);
+        try {
+            twitchWS = new WebSocket("wss://irc-ws.chat.twitch.tv:443");
+            
+            twitchWS.onopen = () => {
+                twitchWS.send(`PASS oauth:${token}`);
+                twitchWS.send(`NICK ${broadcasterSetting}`);
+                twitchWS.send(`JOIN #${broadcasterSetting}`);
+            };
+
+            twitchWS.onmessage = (event) => {
+                const raw = event.data;
+                if (raw.startsWith("PING")) {
+                    twitchWS.send("PONG :tmi.twitch.tv");
+                    return;
+                }
+                
+                // Once we join the channel successfully (end of MOTD or JOIN message)
+                if (raw.includes(`JOIN #${broadcasterSetting}`) || raw.includes("376 ")) {
+                    isConnected = true;
+                    twitchWS.send(`PRIVMSG #${broadcasterSetting} :${msg}`);
+                    logMsg(`[Twitch Chat] Sent message: ${msg}`);
+                    resetDisconnectTimer();
+                }
+            };
+
+            twitchWS.onerror = (err) => {
+                logMsg(`[Twitch Chat Error] WebSocket error: ${err}`, true);
+            };
+
+            twitchWS.onclose = () => {
+                isConnected = false;
+                twitchWS = null;
+            };
+        } catch(e) {
+            logMsg(`[Twitch Chat Error] Failed to connect: ${e.message}`, true);
+        }
+    }
+
+    function resetDisconnectTimer() {
+        clearTimeout(disconnectTimer);
+        disconnectTimer = setTimeout(() => {
+            if (twitchWS) {
+                logMsg("[Twitch Chat] Closing idle WebSocket chat sender...");
+                twitchWS.close();
+                twitchWS = null;
+                isConnected = false;
+            }
+        }, 10000); // Disconnect after 10 seconds of inactivity
+    }
+
+    function replaceTemplateVariables(text, matches, payload) {
+        let result = text || "";
+        if (matches && Array.isArray(matches)) {
+            matches.forEach((val, idx) => {
+                result = result.replace(new RegExp(`\\{${idx + 1}\\}`, 'g'), val || "");
+            });
+        }
+        if (payload) {
+            Object.entries(payload).forEach(([key, val]) => {
+                if (typeof val !== 'object' && val !== null) {
+                    result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), val);
+                }
+            });
+            if (payload.customData && typeof payload.customData === 'object') {
+                Object.entries(payload.customData).forEach(([key, val]) => {
+                    if (typeof val !== 'object' && val !== null) {
+                        result = result.replace(new RegExp(`\\{customData\\.${key}\\}`, 'g'), val);
+                        result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), val);
+                    }
+                });
+            }
+        }
+        return result;
+    }
+
+    // Register Command
+    window.TheaterController.registerCommand("twitch_send_message", async (inputs, matches, payload) => {
+        const textTemplate = inputs.message || "";
+        if (textTemplate) {
+            const resolvedMessage = window.TheaterController.replaceVariables ?
+                window.TheaterController.replaceVariables(textTemplate, matches, payload) :
+                replaceTemplateVariables(textTemplate, matches, payload);
+            sendTwitchMessage(resolvedMessage);
+        }
+    }, {
+        label: "Twitch: Send Chat Message",
+        fields: [
+            {
+                id: "message",
+                label: "Message Text (supports {username}, wildcards {1}, or custom event data)",
+                type: "text",
+                default: "Thanks for the support {username}!",
+                style: "grid-column: 1 / -1;"
+            }
+        ]
+    }, MODULE_ID);
+
+    window.TheaterController.registerModule(MODULE_ID, MODULE_DEFINITION);
+})();

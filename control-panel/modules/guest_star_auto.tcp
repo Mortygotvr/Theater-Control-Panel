@@ -1,0 +1,158 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "guest_star_auto";
+    let currentConfig = {};
+
+    function safeLog(msg, isError = false) {
+        if (window.logMsg) {
+            window.logMsg(msg, isError);
+        } else {
+            console.log(msg);
+        }
+    }
+
+    const MODULE_DEFINITION = {
+        name: "Guest Star Automation",
+        description: "Automates the Guest Star popout page by auto-clicking 'Accept', 'Join Backstage', and 'Start Shared Chat'. <br><button class='btn-green' onclick='window.TheaterController.modules.guest_star_auto.definition.launchAuto()' style='margin-top: 5px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; border-radius: 4px; border: none;'>🚀 Launch Guest Star Window</button>",
+        configFields: [
+            {
+                id: "target_username",
+                label: "Target Username (e.g., mortygotvr)",
+                type: "text",
+                default: ""
+            }
+        ],
+
+        onLoad(moduleConfig) {
+            safeLog("[Guest Star Auto] Module loaded.");
+            currentConfig = moduleConfig;
+        },
+
+        onUnload() {
+            safeLog("[Guest Star Auto] Module unloaded.");
+        },
+
+        async launchAuto() {
+            const username = currentConfig.target_username || "";
+            if (!username) {
+                safeLog("[Guest Star Auto Error] Please configure a Target Username in the module settings.", true);
+                return;
+            }
+
+            const url = `https://www.twitch.tv/popout/${encodeURIComponent(username)}/guest-star`;
+
+            const jsPayload = `
+            (function() {
+                console.log("[Guest Star Auto] Injected script started.");
+                
+                setInterval(() => {
+                    // Find all buttons on the page
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    
+                    // 1. Accept / Accept Invite
+                    const acceptBtn = buttons.find(b => {
+                        const txt = (b.textContent || "").trim();
+                        return txt === 'Accept' || txt === 'Accept Invite';
+                    });
+                    if (acceptBtn) {
+                        console.log("[Guest Star Auto] Found Accept button. Clicking...");
+                        acceptBtn.click();
+                    }
+                    
+                    // 2. Join Backstage
+                    const joinBtn = buttons.find(b => {
+                        const txt = (b.textContent || "").trim();
+                        return txt === 'Join Backstage';
+                    });
+                    if (joinBtn) {
+                        console.log("[Guest Star Auto] Found Join Backstage button. Clicking...");
+                        joinBtn.click();
+                    }
+                    
+                    // 3. Start Shared Chat
+                    const startSharedBtn = buttons.find(b => {
+                        const txt = (b.textContent || "").trim();
+                        return txt === 'Start Shared Chat' || txt === 'Start shared chat';
+                    });
+                    if (startSharedBtn) {
+                        console.log("[Guest Star Auto] Found Start Shared Chat button. Clicking...");
+                        startSharedBtn.click();
+                    }
+                    
+                }, 2000);
+            })();
+            `;
+
+            if (window.__TAURI__ && window.__TAURI__.core.invoke) {
+                safeLog(`[Guest Star Auto] Launching automated visible webview for: ${url}`);
+                try {
+                    await window.__TAURI__.core.invoke('open_automated_webview', {
+                        url: url,
+                        js: jsPayload
+                    });
+                } catch (err) {
+                    safeLog(`[Guest Star Auto Error] Failed to open automated webview: ${err}. Ensure backend is recompiled!`, true);
+                }
+            } else {
+                safeLog("[Guest Star Auto Warning] Not running in Tauri. Opening normal tab (automation JS will not run).", true);
+                window.open(url, "_blank");
+            }
+        }
+    };
+
+    function replaceTemplateVariables(text, matches, payload) {
+        let result = text || "";
+        if (matches && Array.isArray(matches)) {
+            matches.forEach((val, idx) => {
+                result = result.replace(new RegExp(`\\{${idx + 1}\\}`, 'g'), val || "");
+            });
+        }
+        if (payload) {
+            Object.entries(payload).forEach(([key, val]) => {
+                if (typeof val !== 'object' && val !== null) {
+                    result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), val);
+                }
+            });
+            if (payload.customData && typeof payload.customData === 'object') {
+                Object.entries(payload.customData).forEach(([key, val]) => {
+                    if (typeof val !== 'object' && val !== null) {
+                        result = result.replace(new RegExp(`\\{customData\\.${key}\\}`, 'g'), val);
+                        result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), val);
+                    }
+                });
+            }
+        }
+        return result;
+    }
+
+    // Register Command / Unified Action
+    window.TheaterController.registerCommand("guest_star_auto_command", async (inputs, matches, payload) => {
+        const resolve = (txt) => {
+            if (!txt) return "";
+            return window.TheaterController.replaceVariables ?
+                window.TheaterController.replaceVariables(txt, matches, payload) :
+                replaceTemplateVariables(txt, matches, payload);
+        };
+
+        const action = resolve(inputs.action || "");
+        if (action === "launch") {
+            await MODULE_DEFINITION.launchAuto();
+        }
+    }, {
+        label: "Guest Star Auto",
+        fields: [
+            {
+                id: "action",
+                label: "Action",
+                type: "select",
+                options: [
+                    { value: "launch", label: "Launch Guest Star Auto-Accepter" }
+                ],
+                default: "launch",
+                style: "grid-column: 1 / -1;"
+            }
+        ]
+    }, MODULE_ID);
+
+    window.TheaterController.registerModule(MODULE_ID, MODULE_DEFINITION);
+})();

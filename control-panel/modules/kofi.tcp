@@ -1,0 +1,778 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "kofi_api";
+    const MASTER_RELAY_URL = "https://script.google.com/macros/s/AKfycbzRJbtcDnvFcCx-uwsbCdEp1XqHkfrcn8sn-fwB3CtHV22jOGl6QHGyaJE5TY0SNhDP/exec";
+
+    let currentConfig = {};
+    let pollIntervalId = null;
+    let hudIntervalId = null;
+    let isPollingInProgress = false;
+
+    // Deduplication tracker for processed event IDs
+    const processedIds = new Set();
+    const MAX_TRACKED_IDS = 1000;
+
+    // Live session statistics
+    const stats = {
+        total_donations: 0,
+        total_subscriptions: 0,
+        total_shop_orders: 0,
+        total_commissions: 0,
+        total_events: 0,
+        total_amount_cents: 0,
+        latest_supporter: "",
+        latest_amount: "$0.00",
+        latest_message: "",
+        latest_type: "",
+        latest_tier: "",
+        recent_supporters: []
+    };
+
+    function safeLog(msg, isError = false) {
+        if (window.logMsg) {
+            window.logMsg(msg, isError);
+        } else {
+            console.log(msg);
+        }
+    }
+
+    function getFieldVal(fieldId) {
+        const el = document.querySelector(`.mod-field-kofi_api[data-field-id="${fieldId}"]`);
+        const val = el ? el.value.trim() : (currentConfig[fieldId] || "").toString().trim();
+        if (!val && fieldId === "relay_url") return MASTER_RELAY_URL;
+        return val;
+    }
+
+    function formatCurrency(amountCents, symbol = "$") {
+        return `${symbol}${(amountCents / 100).toFixed(2)}`;
+    }
+
+    function parseAmountToCents(amountStr) {
+        if (typeof amountStr === "number") {
+            return Math.round(amountStr * 100);
+        }
+        if (!amountStr) return 0;
+        const cleaned = amountStr.toString().replace(/[^0-9.]/g, "");
+        const parsed = parseFloat(cleaned);
+        return isNaN(parsed) ? 0 : Math.round(parsed * 100);
+    }
+
+    function recordProcessedId(id) {
+        if (!id) return;
+        processedIds.add(id);
+        if (processedIds.size > MAX_TRACKED_IDS) {
+            const firstItem = processedIds.values().next().value;
+            processedIds.delete(firstItem);
+        }
+    }
+
+    function isKofiTestEvent(eventData) {
+        if (!eventData) return false;
+        const msgId = (eventData.message_id || "").toLowerCase();
+        const txId = (eventData.kofi_transaction_id || "").toLowerCase();
+        const fromName = (eventData.from_name || "").toLowerCase();
+        const msg = (eventData.message || "").toLowerCase();
+        const email = (eventData.email || "").toLowerCase();
+        const token = (eventData.verification_token || "").toLowerCase();
+
+        return msgId.includes("12345678-1234-1234-1234-123456789abc") ||
+               txId.includes("12345678-1234-1234-1234-123456789abc") ||
+               txId.includes("00000000-1111-2222-3333-444444444444") ||
+               fromName.includes("jo example") ||
+               fromName.includes("john doe") ||
+               msg.includes("good luck with the integration") ||
+               msg.includes("test message from ko-fi") ||
+               email.includes("jo.example@example.com") ||
+               token === "your_token";
+    }
+
+    function processIncomingKofiEvent(rawEvent, isSimulation = false) {
+        if (!rawEvent) return;
+
+        // If data is wrapped as a JSON string under "data" parameter (standard Ko-fi webhook form POST)
+        let eventData = rawEvent;
+        if (typeof rawEvent.data === "string") {
+            try {
+                eventData = JSON.parse(rawEvent.data);
+            } catch (e) {
+                safeLog(`[Ko-fi API Error] Failed to parse payload data string: ${e.message}`, true);
+                return;
+            }
+        }
+
+        const isTest = isKofiTestEvent(eventData);
+
+        const configuredToken = getFieldVal("verification_token") || (currentConfig.verification_token || "").trim();
+        if (configuredToken && !isSimulation && !isTest) {
+            const eventToken = (eventData.verification_token || "").trim();
+            if (eventToken && eventToken !== configuredToken && eventToken !== "YOUR_TOKEN") {
+                safeLog(`[Ko-fi API Warning] Ignored event with mismatched verification token: "${eventToken}"`, true);
+                return;
+            }
+        }
+
+        // Deduplication: allow repeated test clicks from Ko-fi dashboard without getting blocked
+        const baseId = eventData.message_id || eventData.kofi_transaction_id;
+        const messageId = isTest ? `test_${Date.now()}_${Math.random()}` : (baseId || `kofi_${Date.now()}_${Math.random()}`);
+
+        if (!isSimulation && !isTest && baseId && processedIds.has(baseId)) {
+            // Already processed this transaction
+            return;
+        }
+        if (baseId && !isTest) {
+            recordProcessedId(baseId);
+        }
+
+        const eventType = eventData.type || "Donation"; // "Donation" | "Subscription" | "Shop Order" | "Commission"
+        const supporterName = eventData.from_name || "Anonymous Supporter";
+        const messageText = eventData.message || "";
+        const currencySymbol = getFieldVal("currency_symbol") || currentConfig.currency_symbol || "$";
+        const currencyCode = eventData.currency || "USD";
+        const amountCents = parseAmountToCents(eventData.amount);
+        const formattedAmount = `${currencySymbol}${(amountCents / 100).toFixed(2)}`;
+        const tierName = eventData.tier_name || (eventType === "Subscription" ? "Member" : "");
+        const isPublic = eventData.is_public !== false;
+        const isSubPayment = !!eventData.is_subscription_payment;
+        const isFirstSubPayment = !!eventData.is_first_subscription_payment;
+        const transactionUrl = eventData.url || "";
+
+        // Format shop items summary if present
+        let shopSummary = "";
+        if (Array.isArray(eventData.shop_items) && eventData.shop_items.length > 0) {
+            shopSummary = eventData.shop_items.map(item => {
+                const qty = item.quantity || 1;
+                const name = item.variation_name || item.direct_link_code || "Item";
+                return `${qty}x ${name}`;
+            }).join(", ");
+        }
+
+        // Update session stats
+        stats.total_events++;
+        stats.total_amount_cents += amountCents;
+        stats.latest_supporter = supporterName;
+        stats.latest_amount = formattedAmount;
+        stats.latest_message = messageText;
+        stats.latest_type = eventType;
+        stats.latest_tier = tierName;
+
+        if (eventType === "Donation") stats.total_donations++;
+        else if (eventType === "Subscription") stats.total_subscriptions++;
+        else if (eventType === "Shop Order") stats.total_shop_orders++;
+        else if (eventType === "Commission") stats.total_commissions++;
+
+        if (supporterName && !stats.recent_supporters.includes(supporterName)) {
+            stats.recent_supporters.unshift(supporterName);
+            if (stats.recent_supporters.length > 10) stats.recent_supporters.pop();
+        }
+
+        // Build notification / log message
+        let summaryMsg = "";
+        if (isTest) {
+            summaryMsg = `[🧪 Ko-fi Webhook Test] ${supporterName} sent ${formattedAmount} (${eventType})!`;
+        } else if (eventType === "Subscription") {
+            summaryMsg = `${supporterName} subscribed on Ko-fi (${tierName}) with ${formattedAmount}!`;
+        } else if (eventType === "Shop Order") {
+            summaryMsg = `${supporterName} bought ${shopSummary || "items"} for ${formattedAmount} on Ko-fi!`;
+        } else if (eventType === "Commission") {
+            summaryMsg = `${supporterName} ordered a commission for ${formattedAmount} on Ko-fi!`;
+        } else {
+            summaryMsg = `${supporterName} tipped ${formattedAmount} on Ko-fi!`;
+        }
+
+        if (messageText) {
+            summaryMsg += ` Message: "${messageText}"`;
+        }
+
+        safeLog(`[Ko-fi API] ${summaryMsg}`);
+
+        // Construct trigger payload
+        const triggerEventData = {
+            eventType: eventType,
+            amountCents: amountCents,
+            rawAmount: amountCents / 100,
+            tierName: tierName,
+            isPublic: isPublic
+        };
+
+        const triggerPayload = {
+            username: supporterName,
+            from_name: supporterName,
+            message: messageText || summaryMsg,
+            amount: formattedAmount,
+            raw_amount: (amountCents / 100).toFixed(2),
+            amount_cents: amountCents,
+            currency: currencyCode,
+            type: eventType,
+            tier_name: tierName,
+            is_public: isPublic ? "true" : "false",
+            is_subscription_payment: isSubPayment ? "true" : "false",
+            is_first_subscription_payment: isFirstSubPayment ? "true" : "false",
+            kofi_transaction_id: eventData.kofi_transaction_id || messageId,
+            message_id: messageId,
+            url: transactionUrl,
+            shop_items_summary: shopSummary,
+            session_total_amount: formatCurrency(stats.total_amount_cents, currencySymbol),
+            session_donation_count: stats.total_events,
+            customData: {
+                fromName: supporterName,
+                amount: formattedAmount,
+                amountCents: amountCents,
+                rawAmount: amountCents / 100,
+                currency: currencyCode,
+                type: eventType,
+                tierName: tierName,
+                message: messageText,
+                isPublic: isPublic,
+                isSubscriptionPayment: isSubPayment,
+                isFirstSubscriptionPayment: isFirstSubPayment,
+                transactionId: eventData.kofi_transaction_id || messageId,
+                url: transactionUrl,
+                shopItems: eventData.shop_items || [],
+                shopItemsSummary: shopSummary,
+                sessionTotalAmount: formatCurrency(stats.total_amount_cents, currencySymbol),
+                sessionEventsCount: stats.total_events
+            }
+        };
+
+        dispatchKofiTrigger(triggerEventData, triggerPayload);
+    }
+
+    async function pollRelayServer(isManual = false) {
+        const relayUrl = getFieldVal("relay_url") || (currentConfig.relay_url || "").trim() || MASTER_RELAY_URL;
+        if (!relayUrl) {
+            if (isManual) {
+                safeLog("[Ko-fi API] Cannot poll: No Webhook Relay URL configured in module settings.", true);
+                alert("Please enter the Webhook Relay URL in Ko-fi module settings.");
+            }
+            return;
+        }
+
+        if (isPollingInProgress) return;
+        isPollingInProgress = true;
+
+        try {
+            const verificationToken = getFieldVal("verification_token") || (currentConfig.verification_token || "").trim();
+            
+            let data = null;
+
+            // Strategy 1: POST request with text/plain (matches Patreon module, 100% reliable in Chromium WebView2)
+            try {
+                const postResponse = await fetch(relayUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "text/plain" },
+                    body: JSON.stringify({
+                        action: "poll",
+                        token: verificationToken
+                    })
+                });
+                if (postResponse.ok) {
+                    data = await postResponse.json();
+                }
+            } catch (postErr) {
+                // If POST failed, try GET fallback
+            }
+
+            // Strategy 2: GET request fallback
+            if (!data) {
+                const delimiter = relayUrl.includes("?") ? "&" : "?";
+                const fetchUrl = `${relayUrl}${delimiter}action=poll${verificationToken ? `&token=${encodeURIComponent(verificationToken)}` : ""}&t=${Date.now()}`;
+                const getResponse = await fetch(fetchUrl);
+                if (getResponse.ok) {
+                    data = await getResponse.json();
+                }
+            }
+
+            if (!data) {
+                if (isManual) {
+                    safeLog("[Ko-fi API Warning] Relay server reached but returned empty response.", true);
+                }
+                return;
+            }
+
+            if (data && Array.isArray(data.events)) {
+                if (data.events.length > 0) {
+                    safeLog(`[Ko-fi API] ✅ Received ${data.events.length} new event(s) from relay!`);
+                    for (const ev of data.events) {
+                        processIncomingKofiEvent(ev, false);
+                    }
+                } else if (isManual) {
+                    safeLog("[Ko-fi API] Polled relay successfully: No new pending events in queue.");
+                }
+            } else if (Array.isArray(data)) {
+                if (data.length > 0) {
+                    safeLog(`[Ko-fi API] ✅ Received ${data.length} new event(s) from relay!`);
+                    for (const ev of data) {
+                        processIncomingKofiEvent(ev, false);
+                    }
+                } else if (isManual) {
+                    safeLog("[Ko-fi API] Polled relay successfully: Queue is empty.");
+                }
+            } else if (data && data.type) {
+                processIncomingKofiEvent(data, false);
+            }
+        } catch (err) {
+            safeLog(`[Ko-fi API Error] Relay polling exception: ${err.message || err}`, true);
+        } finally {
+            isPollingInProgress = false;
+        }
+    }
+
+    function dispatchKofiTrigger(eventData, payload) {
+        if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+            window.TheaterController.dispatchTrigger("kofi_event", eventData, payload);
+        }
+    }
+
+    function updateKofiHUD() {
+        const container = document.getElementById("loaded-modules-container");
+        if (!container) return;
+
+        const cardHeaders = container.querySelectorAll(".command-row-header strong");
+        let ourCard = null;
+        cardHeaders.forEach(header => {
+            if (header.innerText === "Ko-fi API") {
+                ourCard = header.closest(".command-row");
+            }
+        });
+
+        if (!ourCard) return;
+
+        let hudDiv = ourCard.querySelector("#kofi-status-hud");
+        if (!hudDiv) {
+            hudDiv = document.createElement("div");
+            hudDiv.id = "kofi-status-hud";
+            hudDiv.style.marginTop = "15px";
+            hudDiv.style.background = "#111";
+            hudDiv.style.padding = "12px";
+            hudDiv.style.borderRadius = "6px";
+            hudDiv.style.border = "1px solid #333";
+            ourCard.appendChild(hudDiv);
+        }
+
+        const relayUrl = getFieldVal("relay_url") || (currentConfig.relay_url || "").trim();
+        const relayConfigured = !!relayUrl;
+        const currencySymbol = getFieldVal("currency_symbol") || currentConfig.currency_symbol || "$";
+        const formattedSessionTotal = formatCurrency(stats.total_amount_cents, currencySymbol);
+
+        const statusColor = relayConfigured ? "#4caf50" : "#ff9800";
+        const statusText = relayConfigured ? "Active (Relay Polling)" : "Ready (Manual / Sim)";
+
+        let content = `
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #222; padding-bottom: 8px; margin-bottom: 8px;">
+                <span style="font-size: 0.85em; color: #888; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">Ko-fi Integration</span>
+                <span style="font-size: 0.85em; color: ${statusColor}; font-weight: bold;">● ${statusText}</span>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 8px; text-align: center;">
+                <div style="background: rgba(255,255,255,0.02); padding: 8px; border-radius: 4px; border: 1px solid #222;">
+                    <div style="font-size: 0.7em; color: #888; text-transform: uppercase; font-weight: bold; margin-bottom: 2px;">Session Raised</div>
+                    <div style="font-size: 1.15em; color: #38bdf8; font-weight: bold; font-family: monospace;">${formattedSessionTotal}</div>
+                </div>
+                <div style="background: rgba(255,255,255,0.02); padding: 8px; border-radius: 4px; border: 1px solid #222;">
+                    <div style="font-size: 0.7em; color: #888; text-transform: uppercase; font-weight: bold; margin-bottom: 2px;">Total Events</div>
+                    <div style="font-size: 1.15em; color: #4caf50; font-weight: bold; font-family: monospace;">${stats.total_events}</div>
+                </div>
+                <div style="background: rgba(255,255,255,0.02); padding: 8px; border-radius: 4px; border: 1px solid #222;">
+                    <div style="font-size: 0.7em; color: #888; text-transform: uppercase; font-weight: bold; margin-bottom: 2px;">Tips / Subs</div>
+                    <div style="font-size: 1.15em; color: #f59e0b; font-weight: bold; font-family: monospace;">${stats.total_donations} / ${stats.total_subscriptions}</div>
+                </div>
+            </div>
+        `;
+
+        if (stats.latest_supporter) {
+            content += `
+                <div style="margin-top: 8px; padding: 6px 10px; background: rgba(0, 122, 204, 0.1); border-left: 3px solid #007acc; border-radius: 3px; font-size: 0.85em;">
+                    <strong style="color: #fff;">Latest:</strong> <span style="color: #38bdf8;">${stats.latest_supporter}</span> (${stats.latest_amount} - ${stats.latest_type})
+                    ${stats.latest_message ? `<div style="color: #aaa; font-style: italic; margin-top: 2px; font-size: 0.9em;">"${stats.latest_message}"</div>` : ""}
+                </div>
+            `;
+        } else {
+            content += `
+                <div style="margin-top: 8px; font-size: 0.8em; color: #777; font-style: italic; text-align: center;">
+                    No events received in this session yet. Test by clicking "Send Test Webhook" on your Ko-fi page!
+                </div>
+            `;
+        }
+
+        hudDiv.innerHTML = content;
+    }
+
+    const MODULE_DEFINITION = {
+        name: "Ko-fi API",
+        description: `Ingests Ko-fi donations, recurring memberships, shop purchases, and commissions in real time.
+            <div style="margin-top: 10px; padding: 12px 14px; background: rgba(255, 255, 255, 0.04); border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.08); font-size: 0.88em; line-height: 1.6;">
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
+                    <button class="btn-green" onclick="window.TheaterController.modules.kofi_api.definition.copyWebhookUrl()" style="font-size: 0.85em; padding: 5px 12px; cursor: pointer; border-radius: 4px; border: none; background: #10b981; color: #fff; font-weight: bold;">📋 Copy Webhook URL</button>
+                    <button class="btn-green" onclick="window.TheaterController.modules.kofi_api.definition.openKofiWebhooks()" style="font-size: 0.85em; padding: 5px 12px; cursor: pointer; border-radius: 4px; border: none; background: #3b82f6; color: #fff; font-weight: bold;">🔗 Open Ko-fi Webhook Settings</button>
+                </div>
+                <strong style="color: #38bdf8;">Setup Instructions:</strong>
+                <ol style="margin: 6px 0 0 18px; padding: 0; color: #ccc;">
+                    <li>Click <strong style="color:#fff;">📋 Copy Webhook URL</strong> above.</li>
+                    <li>Click <strong style="color:#fff;">🔗 Open Ko-fi Webhook Settings</strong> (or go to <a href="javascript:void(0)" onclick="window.TheaterController.modules.kofi_api.definition.openKofiWebhooks()" style="color: #38bdf8; text-decoration: underline; font-weight: bold; cursor: pointer;">ko-fi.com/manage/webhooks ↗</a>) and paste the URL into <strong>Webhook URL</strong>.</li>
+                    <li>On Ko-fi, expand the <strong>Advanced</strong> section, copy your secret <strong>Verification Token</strong>, and paste it into the field below.</li>
+                    <li>Click <strong>Save & Apply Settings</strong>.</li>
+                </ol>
+            </div>`,
+        configFields: [
+            {
+                id: "verification_token",
+                label: "Verification Token (From Ko-fi Dashboard -> Settings -> API / Webhooks -> Advanced)",
+                type: "password",
+                default: ""
+            },
+            {
+                id: "poll_interval",
+                label: "Polling Interval (seconds, min 3, default 5)",
+                type: "number",
+                default: 5
+            },
+            {
+                id: "currency_symbol",
+                label: "Currency Symbol (e.g. $, €, £, ¥)",
+                type: "text",
+                default: "$"
+            }
+        ],
+        variablePresets: [
+            {
+                id: "kofi-donation-alert",
+                label: "Ko-fi: Donation Alert Preset",
+                optgroupLabel: "Ko-fi Presets",
+                samplePayload: {
+                    username: "CoffeeLover99",
+                    from_name: "CoffeeLover99",
+                    message: "Love the streams! Keep being awesome ❤️",
+                    amount: "$5.00",
+                    raw_amount: "5.00",
+                    amount_cents: 500,
+                    currency: "USD",
+                    type: "Donation",
+                    tier_name: "",
+                    is_public: "true",
+                    is_subscription_payment: "false",
+                    is_first_subscription_payment: "false",
+                    kofi_transaction_id: "11112222-3333-4444-5555-666677778888",
+                    message_id: "msg_12345",
+                    url: "https://ko-fi.com/Home/CoffeeShop?txid=11112222",
+                    shop_items_summary: "",
+                    session_total_amount: "$25.00",
+                    session_donation_count: 5,
+                    customData: {
+                        fromName: "CoffeeLover99",
+                        amount: "$5.00",
+                        amountCents: 500,
+                        rawAmount: 5,
+                        currency: "USD",
+                        type: "Donation",
+                        tierName: "",
+                        message: "Love the streams! Keep being awesome ❤️",
+                        isPublic: true,
+                        isSubscriptionPayment: false,
+                        isFirstSubscriptionPayment: false,
+                        transactionId: "11112222-3333-4444-5555-666677778888",
+                        url: "https://ko-fi.com/Home/CoffeeShop?txid=11112222",
+                        shopItems: [],
+                        shopItemsSummary: "",
+                        sessionTotalAmount: "$25.00",
+                        sessionEventsCount: 5
+                    }
+                }
+            },
+            {
+                id: "kofi-subscription-alert",
+                label: "Ko-fi: Membership Subscription Preset",
+                optgroupLabel: "Ko-fi Presets",
+                samplePayload: {
+                    username: "GoldSupporter",
+                    from_name: "GoldSupporter",
+                    message: "Excited to join the Gold Tier membership!",
+                    amount: "$10.00",
+                    raw_amount: "10.00",
+                    amount_cents: 1000,
+                    currency: "USD",
+                    type: "Subscription",
+                    tier_name: "Gold VIP Tier",
+                    is_public: "true",
+                    is_subscription_payment: "true",
+                    is_first_subscription_payment: "true",
+                    kofi_transaction_id: "22223333-4444-5555-6666-777788889999",
+                    message_id: "msg_sub_67890",
+                    url: "https://ko-fi.com/Home/CoffeeShop?txid=22223333",
+                    shop_items_summary: "",
+                    session_total_amount: "$35.00",
+                    session_donation_count: 6,
+                    customData: {
+                        fromName: "GoldSupporter",
+                        amount: "$10.00",
+                        amountCents: 1000,
+                        rawAmount: 10,
+                        currency: "USD",
+                        type: "Subscription",
+                        tierName: "Gold VIP Tier",
+                        message: "Excited to join the Gold Tier membership!",
+                        isPublic: true,
+                        isSubscriptionPayment: true,
+                        isFirstSubscriptionPayment: true,
+                        transactionId: "22223333-4444-5555-6666-777788889999",
+                        url: "https://ko-fi.com/Home/CoffeeShop?txid=22223333",
+                        shopItems: [],
+                        shopItemsSummary: "",
+                        sessionTotalAmount: "$35.00",
+                        sessionEventsCount: 6
+                    }
+                }
+            },
+            {
+                id: "kofi-shop-alert",
+                label: "Ko-fi: Shop Order Preset",
+                optgroupLabel: "Ko-fi Presets",
+                samplePayload: {
+                    username: "ArtFanatic",
+                    from_name: "ArtFanatic",
+                    message: "Can't wait for the stickers!",
+                    amount: "$15.00",
+                    raw_amount: "15.00",
+                    amount_cents: 1500,
+                    currency: "USD",
+                    type: "Shop Order",
+                    tier_name: "",
+                    is_public: "true",
+                    is_subscription_payment: "false",
+                    is_first_subscription_payment: "false",
+                    kofi_transaction_id: "33334444-5555-6666-7777-888899990000",
+                    message_id: "msg_shop_11223",
+                    url: "https://ko-fi.com/Home/CoffeeShop?txid=33334444",
+                    shop_items_summary: "2x Holo Sticker Pack, 1x Enamel Pin",
+                    session_total_amount: "$50.00",
+                    session_donation_count: 7,
+                    customData: {
+                        fromName: "ArtFanatic",
+                        amount: "$15.00",
+                        amountCents: 1500,
+                        rawAmount: 15,
+                        currency: "USD",
+                        type: "Shop Order",
+                        tierName: "",
+                        message: "Can't wait for the stickers!",
+                        isPublic: true,
+                        isSubscriptionPayment: false,
+                        isFirstSubscriptionPayment: false,
+                        transactionId: "33334444-5555-6666-7777-888899990000",
+                        url: "https://ko-fi.com/Home/CoffeeShop?txid=33334444",
+                        shopItems: [
+                            { direct_link_code: "holo_stickers", variation_name: "Holo Sticker Pack", quantity: 2 },
+                            { direct_link_code: "pin", variation_name: "Enamel Pin", quantity: 1 }
+                        ],
+                        shopItemsSummary: "2x Holo Sticker Pack, 1x Enamel Pin",
+                        sessionTotalAmount: "$50.00",
+                        sessionEventsCount: 7
+                    }
+                }
+            },
+            {
+                id: "kofi-get-stats",
+                label: "Ko-fi: Context Provider Stats",
+                optgroupLabel: "Get Command Presets",
+                samplePayload: {
+                    kofi_latest_supporter: "CoffeeLover99",
+                    kofi_latest_amount: "$5.00",
+                    kofi_latest_raw_amount: 5,
+                    kofi_latest_message: "Love the streams!",
+                    kofi_latest_type: "Donation",
+                    kofi_latest_tier: "",
+                    kofi_session_total_amount: "$50.00",
+                    kofi_session_total_cents: 5000,
+                    kofi_session_donation_count: 5,
+                    kofi_session_sub_count: 1,
+                    kofi_session_shop_count: 1,
+                    kofi_session_commission_count: 0,
+                    kofi_session_total_events: 7,
+                    kofi_recent_supporters: "CoffeeLover99, GoldSupporter, ArtFanatic"
+                }
+            }
+        ],
+
+        onLoad(moduleConfig) {
+            safeLog("[Ko-fi API] Module loaded successfully.");
+            currentConfig = moduleConfig || {};
+
+            const relayUrl = getFieldVal("relay_url") || currentConfig.relay_url || MASTER_RELAY_URL;
+            if (relayUrl && relayUrl.trim()) {
+                const intervalSec = Math.max(3, parseInt(getFieldVal("poll_interval") || currentConfig.poll_interval) || 5);
+                safeLog(`[Ko-fi API] Polling enabled for relay: ${relayUrl} (every ${intervalSec}s)`);
+                
+                // Initial poll after 1s
+                setTimeout(() => {
+                    pollRelayServer();
+                }, 1000);
+
+                pollIntervalId = setInterval(pollRelayServer, intervalSec * 1000);
+            } else {
+                safeLog("[Ko-fi API] Relay URL is not configured. Ready for manual testing or relay setup.");
+            }
+
+            // HUD update ticker
+            hudIntervalId = setInterval(updateKofiHUD, 3000);
+            setTimeout(updateKofiHUD, 500);
+        },
+
+        onUnload() {
+            safeLog("[Ko-fi API] Module unloaded.");
+            if (pollIntervalId) {
+                clearInterval(pollIntervalId);
+                pollIntervalId = null;
+            }
+            if (hudIntervalId) {
+                clearInterval(hudIntervalId);
+                hudIntervalId = null;
+            }
+
+            const hudDiv = document.getElementById("kofi-status-hud");
+            if (hudDiv && hudDiv.parentNode) {
+                hudDiv.parentNode.removeChild(hudDiv);
+            }
+        },
+
+        copyWebhookUrl() {
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(MASTER_RELAY_URL).then(() => {
+                    safeLog("[Ko-fi API] Copied Webhook Relay URL to clipboard!");
+                    alert(`Copied Webhook URL to clipboard!\n\n${MASTER_RELAY_URL}\n\nPaste this into your Ko-fi settings at:\nhttps://ko-fi.com/manage/webhooks`);
+                }).catch(() => {
+                    prompt("Copy your Webhook Relay URL:", MASTER_RELAY_URL);
+                });
+            } else {
+                prompt("Copy your Webhook Relay URL:", MASTER_RELAY_URL);
+            }
+        },
+
+        openKofiWebhooks() {
+            const url = "https://ko-fi.com/manage/webhooks";
+            safeLog("[Ko-fi API] Opening Ko-fi Webhook Settings in default browser...");
+            if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+                window.__TAURI__.core.invoke('run_external_command', {
+                    program: "cmd.exe",
+                    args: ["/c", "start", "", url]
+                }).catch(() => {
+                    window.open(url, "_blank");
+                });
+            } else {
+                window.open(url, "_blank");
+            }
+        },
+
+        // External push endpoint for local webhooks or direct integrations
+        handleWebhookPayload(payload) {
+            processIncomingKofiEvent(payload, false);
+        }
+    };
+
+    // Register Context Provider
+    window.TheaterController.registerContextProvider("kofi_stats_provider", 
+        async () => {
+            const currencySymbol = getFieldVal("currency_symbol") || currentConfig.currency_symbol || "$";
+            return {
+                kofi_latest_supporter: stats.latest_supporter || "None",
+                kofi_latest_amount: stats.latest_amount || "$0.00",
+                kofi_latest_raw_amount: (stats.total_amount_cents / 100),
+                kofi_latest_message: stats.latest_message || "",
+                kofi_latest_type: stats.latest_type || "None",
+                kofi_latest_tier: stats.latest_tier || "",
+                kofi_session_total_amount: formatCurrency(stats.total_amount_cents, currencySymbol),
+                kofi_session_total_cents: stats.total_amount_cents,
+                kofi_session_donation_count: stats.total_donations,
+                kofi_session_sub_count: stats.total_subscriptions,
+                kofi_session_shop_count: stats.total_shop_orders,
+                kofi_session_commission_count: stats.total_commissions,
+                kofi_session_total_events: stats.total_events,
+                kofi_recent_supporters: stats.recent_supporters.join(", ") || "None"
+            };
+        },
+        {
+            label: "Ko-fi: Creator & Session Statistics",
+            samplePayload: {
+                kofi_latest_supporter: "CoffeeLover99",
+                kofi_latest_amount: "$5.00",
+                kofi_latest_raw_amount: 5,
+                kofi_latest_message: "Love the streams!",
+                kofi_latest_type: "Donation",
+                kofi_latest_tier: "",
+                kofi_session_total_amount: "$50.00",
+                kofi_session_total_cents: 5000,
+                kofi_session_donation_count: 5,
+                kofi_session_sub_count: 1,
+                kofi_session_shop_count: 1,
+                kofi_session_commission_count: 0,
+                kofi_session_total_events: 7,
+                kofi_recent_supporters: "CoffeeLover99, GoldSupporter, ArtFanatic"
+            }
+        },
+        MODULE_ID
+    );
+
+    // Register Custom Trigger
+    window.TheaterController.registerTrigger("kofi_event", 
+        (t, eventData) => {
+            // Event Type Filter
+            if (t.eventType && t.eventType !== "all" && t.eventType !== eventData.eventType) {
+                return false;
+            }
+
+            // Minimum Amount Filter
+            if (t.minAmount && parseFloat(t.minAmount) > 0) {
+                const minCents = Math.round(parseFloat(t.minAmount) * 100);
+                if (eventData.amountCents < minCents) {
+                    return false;
+                }
+            }
+
+            // Tier Name Filter (for subscriptions)
+            if (t.tierFilter && t.tierFilter.trim()) {
+                const requiredTier = t.tierFilter.trim().toLowerCase();
+                const actualTier = (eventData.tierName || "").toLowerCase();
+                if (!actualTier.includes(requiredTier)) {
+                    return false;
+                }
+            }
+
+            // Public Only Filter
+            if (t.publicOnly && !eventData.isPublic) {
+                return false;
+            }
+
+            return true;
+        },
+        {
+            label: "Ko-fi Event",
+            fields: [
+                { 
+                    id: "eventType", 
+                    label: "Event Type", 
+                    type: "select", 
+                    options: [
+                        { value: "all", label: "Any Ko-fi Event (All Types)" },
+                        { value: "Donation", label: "Donation (One-time Tip / Coffee)" },
+                        { value: "Subscription", label: "Subscription (Monthly Membership)" },
+                        { value: "Shop Order", label: "Shop Order (Physical/Digital Item)" },
+                        { value: "Commission", label: "Commission (Custom Order)" }
+                    ],
+                    default: "all"
+                },
+                { 
+                    id: "minAmount", 
+                    label: "Minimum Amount Filter (Optional, e.g. 5.00)", 
+                    type: "number", 
+                    default: 0 
+                },
+                {
+                    id: "tierFilter",
+                    label: "Membership Tier Match (Optional filter for Subscriptions)",
+                    type: "text",
+                    default: ""
+                }
+            ]
+        }, 
+        MODULE_ID
+    );
+
+    window.TheaterController.registerModule(MODULE_ID, MODULE_DEFINITION);
+})();

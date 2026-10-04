@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Theater Web Source transparency test</title>
+<!-- Add as a Theater Web Source (Local file, 800x600) over a colorful scene:
+     the page background must be invisible, the boxes see-through at their
+     stated opacity, and the dot must move smoothly. -->
+<style>
+  body { margin: 0; font: bold 22px "Segoe UI", sans-serif; color: #fff; }
+  .row { display: flex; gap: 16px; padding: 24px; }
+  .box {
+    width: 170px; height: 120px; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    background: rgb(40, 120, 255);
+  }
+  .fade {
+    margin: 0 24px; height: 60px; border-radius: 12px;
+    background: linear-gradient(to right, rgba(255, 60, 60, 1), rgba(255, 60, 60, 0));
+  }
+  .dot {
+    position: absolute; top: 380px; left: 24px; width: 60px; height: 60px; border-radius: 50%;
+    background: #ffd000; animation: slide 2s ease-in-out infinite alternate;
+  }
+  @keyframes slide { to { left: calc(100% - 84px); } }
+  .label { position: absolute; bottom: 24px; left: 24px; text-shadow: 0 0 6px #000; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="box" style="opacity: 1">100%</div>
+    <div class="box" style="opacity: 0.75">75%</div>
+    <div class="box" style="opacity: 0.5">50%</div>
+    <div class="box" style="opacity: 0.25">25%</div>
+  </div>
+  <div class="fade"></div>
+  <div class="dot"></div>
+  <div class="label">Theater Web Source · <span id="clock"></span></div>
+  <script>
+    const clock = document.getElementById('clock');
+    setInterval(() => { clock.textContent = new Date().toLocaleTimeString(); }, 250);
+  </script>
+</body>
+</html>

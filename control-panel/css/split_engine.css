@@ -1,0 +1,276 @@
+.split-parent {
+    display: flex;
+    overflow: hidden;
+}
+.split-horizontal {
+    flex-direction: row !important;
+}
+.split-vertical {
+    flex-direction: column !important;
+}
+.split-leaf {
+    display: flex;
+    flex-direction: column;
+    min-width: 100px;
+    min-height: 100px;
+    background: var(--bg);
+    overflow: hidden;
+}
+.split-tab-bar {
+    background: #252526;
+    color: #ccc;
+    font-size: 13px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid #333;
+    user-select: none;
+    flex-shrink: 0;
+    height: 30px;
+    padding-left: 4px;
+}
+.tabs-container {
+    display: flex;
+    height: 100%;
+    overflow: hidden;
+    flex: 1;
+    min-width: 0;
+}
+.tabs-container::-webkit-scrollbar {
+    display: none;
+}
+.split-tab {
+    display: flex;
+    align-items: center;
+    padding: 6px 16px 6px 12px;
+    cursor: pointer;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    margin-right: -10px;
+    background: #2d2d2d;
+    color: #888;
+    border: 1px solid #252526;
+    border-bottom: none;
+    transition: background 0.2s, color 0.2s, z-index 0.2s;
+    white-space: nowrap;
+    max-width: 160px;
+    flex: 1 1 160px;
+    min-width: 45px;
+    position: relative;
+    z-index: 1;
+}
+.split-tab span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+}
+.split-tab:hover {
+    background: #333;
+    color: #ccc;
+    z-index: 2;
+}
+.split-tab.active {
+    background: var(--bg);
+    color: #fff;
+    border-color: #444;
+    border-bottom: 1px solid var(--bg);
+    margin-bottom: -1px;
+    z-index: 3;
+}
+.tab-close-btn {
+    flex-shrink: 0;
+    margin-left: 8px;
+    font-size: 14px;
+    line-height: 1;
+    color: #888;
+    transition: color 0.2s;
+    position: relative;
+    z-index: 5;
+}
+.tab-close-btn:hover {
+    color: #f44;
+}
+.add-tab-btn {
+    background: transparent;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: bold;
+    padding: 0 8px;
+    margin-bottom: 2px;
+    transition: color 0.2s;
+    flex-shrink: 0;
+    margin-left: 12px;
+    z-index: 4;
+}
+.add-tab-btn:hover {
+    color: #fff;
+}
+.tab-controls {
+    display: flex;
+    align-items: center;
+    padding: 0 4px;
+    margin-bottom: 4px;
+    flex-shrink: 0;
+}
+.tab-controls button {
+    background: transparent;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    padding: 2px 6px;
+    margin-left: 2px;
+    font-size: 12px;
+    transition: color 0.2s, background 0.2s;
+    border-radius: 3px;
+}
+.tab-controls button:hover {
+    color: #fff;
+    background: #444;
+}
+.split-body {
+    flex: 1 1 0%;
+    overflow-x: hidden;
+    overflow-y: auto;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--bg);
+}
+.split-body > * {
+    min-width: 0;
+}
+.split-divider {
+    background: #333;
+    z-index: 10;
+    flex-shrink: 0;
+    transition: background 0.2s;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+.split-divider:hover {
+    background: var(--accent);
+}
+.divider-horizontal .divider-handle {
+    width: 2px;
+    height: 24px;
+    background: #666;
+    border-radius: 1px;
+    pointer-events: none;
+    transition: background 0.2s;
+}
+.divider-vertical .divider-handle {
+    width: 24px;
+    height: 2px;
+    background: #666;
+    border-radius: 1px;
+    pointer-events: none;
+    transition: background 0.2s;
+}
+.split-divider:hover .divider-handle {
+    background: #fff;
+}
+.divider-horizontal {
+    width: 10px !important;
+    min-width: 10px !important;
+    flex-basis: 10px !important;
+    height: 100%;
+    cursor: col-resize;
+}
+.divider-vertical {
+    height: 10px !important;
+    min-height: 10px !important;
+    flex-basis: 10px !important;
+    width: 100%;
+    cursor: row-resize;
+}
+
+/* Locked: the dividers can't be dragged (split_engine.js ignores them). They stay
+   solid and keep catching the mouse, so the page underneath never shows or gets
+   clicked through them. */
+.layout-locked .split-divider { cursor: default; }
+.layout-locked .split-divider:hover { background: #333; }
+.layout-locked .split-divider .divider-handle,
+.layout-locked .split-divider:hover .divider-handle { background: #444; }
+.layout-locked .add-tab-btn { display: none; }
+.layout-locked .tab-close-btn { display: none; }
+
+/* Web Dock Mini Toolbar */
+.dock-web-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: #1e1e1e;
+    border-bottom: 1px solid #333;
+    padding: 3px 6px;
+    height: 28px;
+    box-sizing: border-box;
+    flex-shrink: 0;
+    user-select: none;
+    z-index: 10;
+}
+.dock-web-toolbar .toolbar-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    color: #aaa;
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-size: 13px;
+    cursor: pointer;
+    line-height: 1;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+}
+.dock-web-toolbar .toolbar-btn:hover {
+    background: #333;
+    color: #fff;
+    border-color: #444;
+}
+.dock-web-toolbar .toolbar-url-input {
+    flex: 1;
+    min-width: 60px;
+    height: 20px;
+    padding: 0 6px;
+    background: #141414;
+    border: 1px solid #333;
+    border-radius: 3px;
+    color: #ccc;
+    font-size: 11px;
+    font-family: inherit;
+    transition: border-color 0.15s, color 0.15s;
+}
+.dock-web-toolbar .toolbar-url-input:focus {
+    outline: none;
+    border-color: #007acc;
+    color: #fff;
+    background: #181818;
+}
+.dock-web-toolbar .toolbar-zoom-label {
+    font-size: 11px;
+    color: #888;
+    cursor: pointer;
+    padding: 0 4px;
+    min-width: 32px;
+    text-align: center;
+    user-select: none;
+    transition: color 0.15s;
+}
+.dock-web-toolbar .toolbar-zoom-label:hover {
+    color: #00ffcc;
+}
+.dock-web-toolbar .zoom-btn {
+    font-size: 14px;
+    font-weight: bold;
+    padding: 0 4px;
+}
+.dock-web-toolbar .mute-btn {
+    font-size: 12px;
+}

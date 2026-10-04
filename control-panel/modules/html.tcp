@@ -1,0 +1,162 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "html_connector";
+
+    const MODULE_DEFINITION = {
+        name: "HTML Overlay Connector",
+        description: "Allows HTML overlay widgets to query configuration variables dynamically by firing Control Panel rulesets and returning resolved template text payloads over WebSockets.",
+        configFields: [],
+        variablePresets: [],
+
+        onLoad(moduleConfig) {
+            if (window.logMsg) {
+                window.logMsg("[HTML Connector] Module loaded successfully.");
+            }
+        },
+
+        onUnload() {
+            if (window.logMsg) {
+                window.logMsg("[HTML Connector] Module unloaded.");
+            }
+        }
+    };
+
+    // Register custom command: HTML Send Response
+    window.TheaterController.registerCommand("html_send_response", async (inputs, matches, payload) => {
+        const resolve = (txt) => {
+            if (!txt) return "";
+            return window.TheaterController.replaceVariables ?
+                window.TheaterController.replaceVariables(txt, matches, payload) :
+                txt;
+        };
+
+        // Automatically resolve the trigger name from the triggering payload, falling back to default
+        const responseTrigger = (payload && payload.trigger) ? payload.trigger : "get_supporters_list";
+        const rawMessage = (inputs.messageText || "").trim();
+        
+        let dataToSend;
+        if (!rawMessage) {
+            // Default to full payload if message content is empty
+            dataToSend = payload || {};
+        } else {
+            const resolvedMessage = resolve(rawMessage);
+            try {
+                // If it is valid JSON, parse it to send as an object
+                dataToSend = JSON.parse(resolvedMessage);
+            } catch (e) {
+                dataToSend = resolvedMessage;
+            }
+        }
+
+        const responsePayload = {
+            type: "test_sammi_trigger",
+            trigger: responseTrigger,
+            user: "ControlPanel",
+            username: "ControlPanel",
+            channel: "HTMLResponse",
+            var: dataToSend,
+            payload: payload
+        };
+
+        // 1. Broadcast via BroadcastChannel for standalone overlays
+        try {
+            const bc = new BroadcastChannel("theatre_html_connector");
+            bc.postMessage({
+                type: "html_response",
+                trigger: responseTrigger,
+                var: dataToSend
+            });
+            if (window.logMsg) {
+                window.logMsg(`[HTML Connector] Broadcasted standalone response for trigger "${responseTrigger}"`);
+            }
+        } catch (e) {
+            if (window.logMsg) {
+                window.logMsg(`[HTML Connector Warning] BroadcastChannel failed: ${e.message}`);
+            }
+        }
+
+        // 2. Write to localStorage as a fallback cross-page sync
+        try {
+            const storageKey = `html_response_${responseTrigger}`;
+            localStorage.setItem(storageKey, JSON.stringify({
+                var: dataToSend,
+                timestamp: Date.now()
+            }));
+        } catch (e) {}
+
+        // 3. Send over WebSocket if available (optional Python server)
+        if (window.SAWebSocket && window.SAWebSocket.readyState === WebSocket.OPEN) {
+            window.SAWebSocket.send(JSON.stringify(responsePayload));
+            if (window.logMsg) {
+                window.logMsg(`[HTML Connector] Sent WebSocket response for trigger "${responseTrigger}"`);
+            }
+        } else {
+            if (window.logMsg) {
+                window.logMsg(`[HTML Connector] WebSocket offline. Using standalone local broadcast for "${responseTrigger}".`);
+            }
+        }
+    }, {
+        label: "HTML: Send Response to Overlay",
+        fields: [
+            {
+                id: "messageText",
+                label: "Payload / Message Content (Leave empty to send full JSON payload object)",
+                type: "text",
+                default: "",
+                style: "grid-column: 1 / -1;"
+            }
+        ]
+    }, MODULE_ID);
+
+    // Register Custom Trigger: HTML Request
+    window.TheaterController.registerTrigger("html_request", 
+        (t, eventData) => {
+            return (t.requestTrigger || "").trim().toLowerCase() === (eventData.trigger || "").trim().toLowerCase();
+        },
+        {
+            label: "HTML: Request from Overlay",
+            fields: [
+                { 
+                    id: "requestTrigger", 
+                    label: "Request Trigger Name (e.g. get_supporters_list)", 
+                    type: "text", 
+                    default: "get_supporters_list"
+                }
+            ]
+        },
+        MODULE_ID
+    );
+
+    // Standalone BroadcastChannel listener for incoming payload requests from overlays
+    try {
+        const channel = new BroadcastChannel("theatre_html_connector");
+        channel.onmessage = (event) => {
+            const data = event.data;
+            if (data && data.type === "request_payload" && data.trigger) {
+                if (window.logMsg) {
+                    window.logMsg(`[HTML Connector] Received standalone payload request for trigger "${data.trigger}"`);
+                }
+                const triggerName = data.trigger;
+                const mockPayload = {
+                    trigger: triggerName,
+                    user: "HTMLOverlay",
+                    username: "HTMLOverlay",
+                    channel: "HTMLRequest"
+                };
+                if (window.checkTriggers) {
+                    window.checkTriggers(triggerName, mockPayload);
+                }
+                if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                    window.TheaterController.dispatchTrigger("html_request", { trigger: triggerName }, mockPayload);
+                }
+            }
+        };
+    } catch (e) {
+        if (window.logMsg) {
+            window.logMsg("[HTML Connector Warning] BroadcastChannel listener failed to initialize: " + e.message);
+        }
+    }
+
+    window.TheaterController.registerModule(MODULE_ID, MODULE_DEFINITION);
+})();
+

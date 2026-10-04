@@ -1,0 +1,1998 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supporter Overlay - Theatre</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Cinzel:wght@600;800&family=Inter:wght@400;600;800&family=Montserrat:wght@400;700;900&family=Outfit:wght@300;600;800&family=Playfair+Display:ital,wght@0,600;0,800;1,600&family=Press+Start+2P&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --bg-overlay: #050505;
+            --bg-menu: rgba(14, 16, 22, 0.85);
+            --border-menu: rgba(255, 255, 255, 0.08);
+            --border-hover: rgba(255, 255, 255, 0.16);
+            --accent: #00ffcc;
+            --accent-hover: #33ffdd;
+            --primary: #9d4edd;
+            --success: #00f5d4;
+            --danger: #ef233c;
+            --text-color: #ffffff;
+            --font-sans: 'Outfit', 'Inter', sans-serif;
+            --font-mono: monospace;
+            --x: 50%;
+            --y: 50%;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: var(--bg-overlay);
+            color: var(--text-color);
+            font-family: var(--font-sans);
+            overflow: hidden;
+            position: relative;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        #fireworks-canvas, #canvas-hearts {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        .glow-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            background: radial-gradient(circle at var(--x) var(--y), rgba(0, 255, 204, 0.06) 0%, transparent 60%);
+            z-index: 1;
+        }
+
+        /* Viewport & Scrolling Container */
+        .credits-viewport {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            box-sizing: border-box;
+            pointer-events: none;
+            z-index: 2;
+            background: radial-gradient(circle at center, rgba(0, 255, 204, 0.03) 0%, transparent 75%);
+        }
+
+        .credits-container {
+            width: 80%;
+            max-width: 900px;
+            text-align: center;
+            position: absolute;
+            will-change: transform;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 100px 0;
+        }
+
+        /* Title & Subtitle */
+        .credits-title {
+            font-size: 2.5rem;
+            font-weight: 800;
+            letter-spacing: 2px;
+            margin: 0 0 10px 0;
+            text-transform: uppercase;
+            background: linear-gradient(135deg, var(--accent) 0%, #fff 50%, var(--primary) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 0 30px rgba(0, 255, 204, 0.2);
+            animation: fadeInDown 1.5s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+
+        .credits-subtitle {
+            font-size: 1.1rem;
+            font-weight: 300;
+            color: rgba(255, 255, 255, 0.65);
+            margin-bottom: 3.5rem;
+            letter-spacing: 2px;
+            max-width: 700px;
+            animation: fadeInDown 1.7s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+
+        .credits-list {
+            display: flex;
+            flex-direction: column;
+            gap: 2.5em;
+            width: 100%;
+        }
+
+        /* Tier / Platform Groupings */
+        .credits-tier-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.8em;
+            align-items: center;
+        }
+
+        .credits-tier-title {
+            font-size: 1.35em;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--accent);
+            opacity: 0.95;
+            margin-bottom: 0.4em;
+            text-shadow: 0 0 10px rgba(0, 255, 204, 0.3);
+        }
+
+        .credits-names {
+            display: flex;
+            flex-direction: column;
+            gap: var(--name-spacing, 12px);
+            align-items: center;
+        }
+
+        .credits-name-item {
+            font-size: 1.25em;
+            font-weight: 600;
+            opacity: 0.9;
+            transition: transform 0.3s ease, color 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-shadow: 0 4px 10px rgba(0,0,0,0.5);
+        }
+
+        .credits-name-item:hover {
+            transform: scale(1.15);
+            color: var(--accent);
+            opacity: 1;
+        }
+
+        /* Platform Badge styling */
+        .platform-icon {
+            font-size: 0.65em;
+            padding: 3px 6px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.06);
+            text-transform: uppercase;
+            font-weight: 800;
+            letter-spacing: 0.8px;
+            border: 1px solid rgba(255,255,255,0.08);
+            line-height: 1;
+        }
+
+        .twitch { color: #a970ff; border-color: rgba(169, 112, 255, 0.3); background: rgba(169, 112, 255, 0.05); }
+        .kick { color: #53fc18; border-color: rgba(83, 252, 24, 0.3); background: rgba(83, 252, 24, 0.05); }
+        .youtube { color: #ff4b4b; border-color: rgba(255, 75, 75, 0.3); background: rgba(255, 75, 75, 0.05); }
+        .patreon { color: #ff424d; border-color: rgba(255, 66, 77, 0.3); background: rgba(255, 66, 77, 0.05); }
+
+        .credits-loading-msg {
+            font-size: 0.95em;
+            opacity: 0.6;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            padding: 40px 0;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+        }
+
+        /* Horizontal Ticker Mode Overrides */
+        .credits-viewport.horizontal-mode {
+            top: auto;
+            bottom: 0;
+            height: 60px;
+            background: rgba(8, 9, 12, 0.75);
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            padding: 0;
+            background: radial-gradient(circle at bottom, rgba(0, 255, 204, 0.06) 0%, transparent 100%);
+        }
+
+        .credits-viewport.horizontal-mode .credits-container {
+            width: auto;
+            max-width: none;
+            position: absolute;
+            white-space: nowrap;
+            display: flex;
+            flex-direction: row !important;
+            align-items: center;
+            gap: 40px;
+            padding: 0 40px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        .credits-viewport.horizontal-mode .credits-title {
+            font-size: 1.1em;
+            margin-bottom: 0;
+            margin-right: 10px;
+            flex-shrink: 0;
+            background: linear-gradient(135deg, var(--accent) 0%, #fff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .credits-viewport.horizontal-mode .credits-subtitle {
+            display: none;
+        }
+
+        .credits-viewport.horizontal-mode .credits-list {
+            display: flex;
+            flex-direction: row !important;
+            align-items: center;
+            gap: 40px;
+        }
+
+        .credits-viewport.horizontal-mode .credits-tier-group {
+            display: flex;
+            flex-direction: row !important;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .credits-viewport.horizontal-mode .credits-tier-title {
+            font-size: 0.95em;
+            margin-bottom: 0;
+            flex-shrink: 0;
+        }
+
+        .credits-viewport.horizontal-mode .credits-tier-title::after {
+            content: ":";
+        }
+
+        .credits-viewport.horizontal-mode .credits-names {
+            display: flex;
+            flex-direction: row !important;
+            align-items: center;
+            gap: var(--name-spacing, 20px);
+        }
+
+        .credits-viewport.horizontal-mode .credits-name-item {
+            font-size: 0.9em;
+            white-space: nowrap;
+        }
+
+        .credits-viewport.horizontal-mode .credits-name-item::after {
+            content: "•";
+            margin-left: var(--name-spacing, 20px);
+            color: rgba(255,255,255,0.2);
+        }
+
+        .credits-viewport.horizontal-mode .credits-name-item:last-child::after {
+            display: none;
+        }
+
+        /* Glassmorphism Settings Panel UI */
+        .settings-hint {
+            position: fixed;
+            top: 15px;
+            right: 15px;
+            background: rgba(0, 0, 0, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: rgba(255, 255, 255, 0.55);
+            padding: 6px 14px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            border-radius: 20px;
+            pointer-events: none;
+            z-index: 998;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: opacity 0.3s ease;
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+        }
+
+        body:hover .settings-hint {
+            opacity: 0;
+        }
+
+        .settings-panel {
+            position: fixed;
+            top: 15px;
+            right: 15px;
+            width: 330px;
+            max-height: calc(100vh - 30px);
+            background: var(--bg-menu);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--border-menu);
+            border-radius: 12px;
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.65);
+            z-index: 999;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(-8px) scale(0.98);
+            transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+                        transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .settings-panel.panel-visible {
+            opacity: 1;
+            pointer-events: auto;
+            transform: translateY(0) scale(1);
+        }
+
+        .settings-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 18px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .settings-header h3 {
+            font-size: 0.95rem;
+            font-weight: 700;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #fff;
+        }
+
+        .settings-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+            scrollbar-width: thin;
+        }
+
+        .settings-section {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            padding-bottom: 14px;
+        }
+
+        .settings-section:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+
+        .section-title {
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: rgba(255, 255, 255, 0.45);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: 2px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .form-group label {
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: rgba(255, 255, 255, 0.65);
+        }
+
+        input[type="text"], select {
+            width: 100%;
+            padding: 7px 10px;
+            background: rgba(0, 0, 0, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 6px;
+            color: white;
+            font-family: var(--font-sans);
+            font-size: 0.8rem;
+            outline: none;
+            transition: border-color 0.2s;
+            box-sizing: border-box;
+        }
+
+        input[type="text"]:focus, select:focus {
+            border-color: var(--accent);
+        }
+
+        .slider-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .slider-val {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--accent);
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 4px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, 0.1);
+            outline: none;
+            margin: 6px 0;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: white;
+            cursor: pointer;
+            box-shadow: 0 0 4px rgba(0,0,0,0.6);
+            transition: transform 0.1s;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+
+        input[type="range"].range-r {
+            background: linear-gradient(to right, rgba(239, 35, 60, 0.15), rgba(239, 35, 60, 0.95));
+        }
+        input[type="range"].range-g {
+            background: linear-gradient(to right, rgba(0, 255, 204, 0.15), rgba(0, 255, 204, 0.95));
+        }
+        input[type="range"].range-b {
+            background: linear-gradient(to right, rgba(0, 180, 216, 0.15), rgba(0, 180, 216, 0.95));
+        }
+
+        .color-control-wrapper {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .sliders-list {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .color-preview-box {
+            width: 60px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .color-preview {
+            width: 46px;
+            height: 46px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            box-shadow: 0 3px 8px rgba(0,0,0,0.4);
+        }
+
+        .hex-text {
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            color: rgba(255, 255, 255, 0.45);
+        }
+
+        .checkbox-group {
+            flex-direction: row;
+            align-items: center;
+            gap: 8px;
+            margin: 4px 0;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            cursor: pointer;
+            width: 14px;
+            height: 14px;
+            margin: 0;
+        }
+
+        .checkbox-group label {
+            cursor: pointer;
+            font-size: 0.78rem;
+            user-select: none;
+            color: rgba(255, 255, 255, 0.75);
+        }
+
+        .control-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .control-actions .btn {
+            flex: 1;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 7px 12px;
+            border-radius: 6px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            cursor: pointer;
+            border: 1px solid transparent;
+            transition: background 0.2s, transform 0.1s;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #000;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            color: white;
+            border-color: rgba(255, 255, 255, 0.08);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .btn-secondary.active {
+            background: var(--accent);
+            color: #000;
+            border-color: var(--accent);
+        }
+
+        .btn-outline {
+            background: transparent;
+            border-color: rgba(255, 255, 255, 0.15);
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        .btn-outline:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.35);
+        }
+
+        .btn-patreon {
+            background: #FF424D;
+            color: #ffffff;
+        }
+        .btn-patreon:hover {
+            background: #e0353f;
+        }
+
+        .btn-block {
+            width: 100%;
+        }
+
+        .btn-sm {
+            padding: 4px 8px;
+            font-size: 0.72rem;
+        }
+
+        .settings-footer {
+            padding: 12px 16px;
+            background: rgba(0,0,0,0.3);
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        /* Animations */
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            z-index: 10000;
+            background: rgba(14, 16, 22, 0.95);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            padding: 8px 16px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.55);
+            transform: translateY(100px);
+            opacity: 0;
+            transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.3s;
+            pointer-events: none;
+        }
+
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+        .toast-content {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: white;
+            font-size: 0.78rem;
+            font-weight: 600;
+        }
+
+        .toast-success i { color: var(--success); }
+        .toast-error i { color: var(--danger); }
+        .toast-info i { color: var(--accent); }
+    </style>
+</head>
+<body>
+    <!-- Background Canvases -->
+    <canvas id="fireworks-canvas"></canvas>
+    <canvas id="canvas-hearts"></canvas>
+    <div class="glow-overlay" id="glow"></div>
+
+    <!-- Credits Viewport -->
+    <div id="credits-viewport" class="credits-viewport">
+        <div id="credits-container" class="credits-container">
+            <div class="credits-title" id="display-title">Legendary Supporters</div>
+            <div class="credits-subtitle" id="display-subtitle">Thank you for making the Theatre possible</div>
+            <div id="credits-list" class="credits-list">
+                <div class="credits-loading-msg">Connecting to Theatre Engine...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mouse Hover settings indicator -->
+    <div class="settings-hint" id="settings-hint">
+        <i class="fa-solid fa-gear fa-spin"></i> Double-Click or press ESC to customize
+    </div>
+
+    <!-- Glassmorphic Settings Panel -->
+    <div id="settings-panel" class="settings-panel">
+        <div class="settings-header">
+            <h3><i class="fa-solid fa-sliders text-accent"></i> Credits Settings</h3>
+            <span class="badge">Overlay</span>
+        </div>
+
+        <div class="settings-content">
+            <!-- WebSocket Controls -->
+            <div class="settings-section">
+                <h4 class="section-title"><i class="fa-solid fa-circle-nodes text-accent"></i> WebSocket Triggers</h4>
+                <div class="form-group">
+                    <label for="input-ws-trigger">WebSocket Trigger Name</label>
+                    <input type="text" id="input-ws-trigger" value="get_supporters_list">
+                </div>
+                <div class="form-group" style="margin-top: 4px;">
+                    <button id="btn-simulate-ws" class="btn btn-secondary btn-sm btn-block"><i class="fa-solid fa-wand-magic-sparkles text-accent"></i> Simulate WS Sync</button>
+                </div>
+            </div>
+
+            <!-- Custom Titles -->
+            <div class="settings-section">
+                <h4 class="section-title"><i class="fa-solid fa-heading"></i> Headers</h4>
+                <div class="form-group">
+                    <label for="input-title">Main Title</label>
+                    <input type="text" id="input-title" value="Legendary Supporters">
+                </div>
+                <div class="form-group">
+                    <label for="input-subtitle">Subtitle</label>
+                    <input type="text" id="input-subtitle" value="Thank you for making the Theatre possible">
+                </div>
+                <div class="form-group">
+                    <label>Header Gradient Colors</label>
+                    <div class="control-actions" style="margin-bottom: 8px;">
+                        <button type="button" id="btn-stop-1" class="btn btn-secondary btn-sm active" style="flex: 1; padding: 4px 0;">Start</button>
+                        <button type="button" id="btn-stop-2" class="btn btn-secondary btn-sm" style="flex: 1; padding: 4px 0;">Middle</button>
+                        <button type="button" id="btn-stop-3" class="btn btn-secondary btn-sm" style="flex: 1; padding: 4px 0;">End</button>
+                    </div>
+                    <div class="color-control-wrapper">
+                        <div class="sliders-list">
+                            <div class="form-group">
+                                <div class="slider-header color-red">
+                                    <label for="slider-header-r">Red</label>
+                                    <span id="val-header-r" class="slider-val">255</span>
+                                </div>
+                                <input type="range" id="slider-header-r" min="0" max="255" value="255" class="range-r">
+                            </div>
+                            <div class="form-group">
+                                <div class="slider-header color-green">
+                                    <label for="slider-header-g">Green</label>
+                                    <span id="val-header-g" class="slider-val">255</span>
+                                </div>
+                                <input type="range" id="slider-header-g" min="0" max="255" value="255" class="range-g">
+                            </div>
+                            <div class="form-group">
+                                <div class="slider-header color-blue">
+                                    <label for="slider-header-b">Blue</label>
+                                    <span id="val-header-b" class="slider-val">255</span>
+                                </div>
+                                <input type="range" id="slider-header-b" min="0" max="255" value="255" class="range-b">
+                            </div>
+                        </div>
+                        <div class="color-preview-box">
+                            <div id="header-color-preview" class="color-preview"></div>
+                            <span id="header-color-hex" class="hex-text">#FFFFFF</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Visual Background -->
+            <div class="settings-section">
+                <h4 class="section-title"><i class="fa-solid fa-wand-magic-sparkles text-accent"></i> Backgrounds</h4>
+                <div class="form-group">
+                    <label for="select-background">Active Animations</label>
+                    <select id="select-background">
+                        <option value="both">Both (Fireworks + Hearts)</option>
+                        <option value="fireworks">Fireworks Only</option>
+                        <option value="hearts">Hearts Only</option>
+                        <option value="none">None (Clean Transparent)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <div class="slider-header">
+                        <label for="slider-bg-opacity">Background Opacity</label>
+                        <span id="val-bg-opacity" class="slider-val">100%</span>
+                    </div>
+                    <input type="range" id="slider-bg-opacity" min="0" max="100" value="100">
+                </div>
+            </div>
+
+            <!-- Typography Settings -->
+            <div class="settings-section">
+                <h4 class="section-title"><i class="fa-solid fa-font"></i> Typography</h4>
+                <div class="form-group">
+                    <label for="select-font">Font Family</label>
+                    <select id="select-font">
+                        <option value="'Outfit', sans-serif">Outfit (Clean, modern)</option>
+                        <option value="'Inter', sans-serif">Inter (Minimalist)</option>
+                        <option value="'Montserrat', sans-serif">Montserrat (Geometric bold)</option>
+                        <option value="'Bebas Neue', sans-serif">Bebas Neue (Impact uppercase)</option>
+                        <option value="'Cinzel', serif">Cinzel (Cinematic / Epic)</option>
+                        <option value="'Playfair Display', serif">Playfair Display (Elegant serif)</option>
+                        <option value="'Press Start 2P', monospace">Press Start 2P (Retro 8-bit)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <div class="slider-header">
+                        <label for="slider-font-size">Font Size</label>
+                        <span id="val-font-size" class="slider-val">32px</span>
+                    </div>
+                    <input type="range" id="slider-font-size" min="16" max="100" value="32">
+                </div>
+                <div class="form-group">
+                    <div class="slider-header">
+                        <label for="slider-name-spacing">Space Between Names</label>
+                        <span id="val-name-spacing" class="slider-val">12px</span>
+                    </div>
+                    <input type="range" id="slider-name-spacing" min="0" max="100" value="12">
+                </div>
+            </div>
+
+            <!-- RGB Text Color -->
+            <div class="settings-section">
+                <h4 class="section-title"><i class="fa-solid fa-palette"></i> Text Color (RGB)</h4>
+                <div class="color-control-wrapper">
+                    <div class="sliders-list">
+                        <div class="form-group">
+                            <div class="slider-header color-red">
+                                <label for="slider-color-r">Red</label>
+                                <span id="val-color-r" class="slider-val">255</span>
+                            </div>
+                            <input type="range" id="slider-color-r" min="0" max="255" value="255" class="range-r">
+                        </div>
+                        <div class="form-group">
+                            <div class="slider-header color-green">
+                                <label for="slider-color-g">Green</label>
+                                <span id="val-color-g" class="slider-val">255</span>
+                            </div>
+                            <input type="range" id="slider-color-g" min="0" max="255" value="255" class="range-g">
+                        </div>
+                        <div class="form-group">
+                            <div class="slider-header color-blue">
+                                <label for="slider-color-b">Blue</label>
+                                <span id="val-color-b" class="slider-val">255</span>
+                            </div>
+                            <input type="range" id="slider-color-b" min="0" max="255" value="255" class="range-b">
+                        </div>
+                    </div>
+                    <div class="color-preview-box">
+                        <div id="color-preview" class="color-preview"></div>
+                        <span id="color-hex" class="hex-text">#FFFFFF</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Scroll & Layout Engine -->
+            <div class="settings-section">
+                <h4 class="section-title"><i class="fa-solid fa-arrows-up-down-left-right"></i> Scroller Layout</h4>
+                <div class="form-group">
+                    <div class="slider-header">
+                        <label for="slider-speed">Scroll Speed</label>
+                        <span id="val-speed" class="slider-val">1.0</span>
+                    </div>
+                    <input type="range" id="slider-speed" min="0" max="10" step="0.1" value="1.0">
+                </div>
+                <div class="form-group">
+                    <label for="select-direction">Layout / Scroll Direction</label>
+                    <select id="select-direction">
+                        <option value="vertical">Vertical Roll (Credits Roll)</option>
+                        <option value="horizontal">Horizontal Banner (Ticker)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="select-grouping">Grouping Style</label>
+                    <select id="select-grouping">
+                        <option value="platform">Group by Platform (Twitch/Kick/YouTube/Patreon)</option>
+                        <option value="tier">Group by Patreon Tier (Requires CSV)</option>
+                        <option value="none">Flat List (All Combined)</option>
+                    </select>
+                </div>
+                <div class="control-actions">
+                    <button id="btn-toggle-scroll" class="btn btn-secondary btn-sm"><i class="fa-solid fa-pause"></i> Pause</button>
+                    <button id="btn-reset-scroll" class="btn btn-secondary btn-outline btn-sm"><i class="fa-solid fa-arrow-rotate-left"></i> Restart</button>
+                </div>
+            </div>
+
+            <!-- CSV Fallback Upload -->
+            <div class="settings-section">
+                <h4 class="section-title"><i class="fa-solid fa-file-csv"></i>Supporters CSV Fallback</h4>
+                <div class="form-group">
+                    <p style="font-size: 0.68rem; color: rgba(255,255,255,0.4); margin: 0 0 4px 0; line-height: 1.3;">
+                        Upload a member list CSV to display supporters offline without Control Panel WebSockets.
+                    </p>
+                    <div class="control-actions" style="margin-bottom: 8px;">
+                        <button id="btn-trigger-csv" class="btn btn-patreon btn-sm" style="flex: 1;"><i class="fa-solid fa-file-import"></i> Upload CSV</button>
+                        <button id="btn-unload-csv" class="btn btn-secondary btn-outline btn-sm" style="flex: 1;"><i class="fa-solid fa-trash-can"></i> Clear CSV</button>
+                    </div>
+                    <input type="file" id="input-csv-file" accept=".csv" class="hidden" style="display: none;">
+                    <div id="csv-status" class="csv-status-text">No CSV file loaded. Using stream network.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="settings-footer">
+            <button id="btn-hide-panel" class="btn btn-primary btn-sm btn-block"><i class="fa-solid fa-eye-slash"></i> Hide Settings Menu</button>
+            <p class="copyright">Press ESC or Double-Click screen to toggle</p>
+        </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast">
+        <div class="toast-content">
+            <i id="toast-icon" class="fa-solid fa-circle-info"></i>
+            <span id="toast-message">Sync initialized.</span>
+        </div>
+    </div>
+
+    <script>
+        // ==========================================================================
+        // Config & State
+        // ==========================================================================
+        const CONFIG_KEY = 'thanks_overlay_config';
+        let config = {
+            requestTrigger: 'get_supporters_list',
+            responseTrigger: 'get_supporters_list',
+            backgroundAnim: 'both',
+            fontFamily: "'Outfit', sans-serif",
+            fontSize: 32,
+            nameSpacing: 12,
+            colorR: 255,
+            colorG: 255,
+            colorB: 255,
+            headerColor1R: 0,
+            headerColor1G: 255,
+            headerColor1B: 204, // Default accent
+            headerColor2R: 255,
+            headerColor2G: 255,
+            headerColor2B: 255, // Default white
+            headerColor3R: 157,
+            headerColor3G: 78,
+            headerColor3B: 221, // Default primary
+            bgAlpha: 100,
+            scrollSpeed: 1.0,
+            scrollDirection: 'vertical',
+            grouping: 'platform',
+            title: 'Legendary Supporters',
+            subtitle: 'Thank you for making the Theatre possible'
+        };
+
+        // Track currently selected gradient stop (1 = Start, 2 = Middle, 3 = End)
+        let activeHeaderStop = 1;
+
+        let state = {
+            wsSubscribers: [], // Twitch, Kick, YouTube subscribers from sub_cache
+            patreonSupporters: [], // Patreon supporters from WebSocket response or CSV
+            isPlaying: true
+        };
+
+        // DOM Elements
+        const el = {
+            creditsViewport: document.getElementById('credits-viewport'),
+            creditsContainer: document.getElementById('credits-container'),
+            creditsList: document.getElementById('credits-list'),
+            displayTitle: document.getElementById('display-title'),
+            displaySubtitle: document.getElementById('display-subtitle'),
+            settingsPanel: document.getElementById('settings-panel'),
+            settingsHint: document.getElementById('settings-hint'),
+
+            // Inputs
+            inputWsTrigger: document.getElementById('input-ws-trigger'),
+            btnSimulateWs: document.getElementById('btn-simulate-ws'),
+            inputTitle: document.getElementById('input-title'),
+            inputSubtitle: document.getElementById('input-subtitle'),
+            btnStop1: document.getElementById('btn-stop-1'),
+            btnStop2: document.getElementById('btn-stop-2'),
+            btnStop3: document.getElementById('btn-stop-3'),
+            sliderHeaderR: document.getElementById('slider-header-r'),
+            valHeaderR: document.getElementById('val-header-r'),
+            sliderHeaderG: document.getElementById('slider-header-g'),
+            valHeaderG: document.getElementById('val-header-g'),
+            sliderHeaderB: document.getElementById('slider-header-b'),
+            valHeaderB: document.getElementById('val-header-b'),
+            headerColorPreview: document.getElementById('header-color-preview'),
+            headerColorHex: document.getElementById('header-color-hex'),
+            selectBackground: document.getElementById('select-background'),
+            sliderBgOpacity: document.getElementById('slider-bg-opacity'),
+            valBgOpacity: document.getElementById('val-bg-opacity'),
+            selectFont: document.getElementById('select-font'),
+            sliderFontSize: document.getElementById('slider-font-size'),
+            valFontSize: document.getElementById('val-font-size'),
+            sliderNameSpacing: document.getElementById('slider-name-spacing'),
+            valNameSpacing: document.getElementById('val-name-spacing'),
+            sliderColorR: document.getElementById('slider-color-r'),
+            valColorR: document.getElementById('val-color-r'),
+            sliderColorG: document.getElementById('slider-color-g'),
+            valColorG: document.getElementById('val-color-g'),
+            sliderColorB: document.getElementById('slider-color-b'),
+            valColorB: document.getElementById('val-color-b'),
+            colorPreview: document.getElementById('color-preview'),
+            colorHex: document.getElementById('color-hex'),
+            sliderSpeed: document.getElementById('slider-speed'),
+            valSpeed: document.getElementById('val-speed'),
+            selectDirection: document.getElementById('select-direction'),
+            selectGrouping: document.getElementById('select-grouping'),
+            btnToggleScroll: document.getElementById('btn-toggle-scroll'),
+            btnResetScroll: document.getElementById('btn-reset-scroll'),
+            btnTriggerCsv: document.getElementById('btn-trigger-csv'),
+            btnUnloadCsv: document.getElementById('btn-unload-csv'),
+            inputCsvFile: document.getElementById('input-csv-file'),
+            csvStatus: document.getElementById('csv-status'),
+            btnHidePanel: document.getElementById('btn-hide-panel'),
+
+            // Toast
+            toast: document.getElementById('toast'),
+            toastIcon: document.getElementById('toast-icon'),
+            toastMessage: document.getElementById('toast-message')
+        };
+
+        // Scroll Engine
+        let scrollPos = 0;
+        let scrollAnimationId = null;
+        let ws = null; // Global WebSocket connection
+        let htmlBc = null; // Standalone BroadcastChannel
+        let lastResponseTime = 0; // Timestamp of the last received response
+
+        // Initialize Settings
+        function loadConfig() {
+            try {
+                const raw = localStorage.getItem(CONFIG_KEY);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    config = { ...config, ...parsed };
+                }
+            } catch (e) {
+                console.error("Failed to load local storage config:", e);
+            }
+
+            // Sync configuration values to UI fields
+            el.inputWsTrigger.value = config.requestTrigger || config.responseTrigger || 'get_supporters_list';
+            el.inputTitle.value = config.title;
+            el.inputSubtitle.value = config.subtitle;
+            
+            // Sync slider to current active header stop values
+            const hR = config[`headerColor${activeHeaderStop}R`] !== undefined ? config[`headerColor${activeHeaderStop}R`] : (activeHeaderStop === 1 ? 0 : (activeHeaderStop === 2 ? 255 : 157));
+            const hG = config[`headerColor${activeHeaderStop}G`] !== undefined ? config[`headerColor${activeHeaderStop}G`] : (activeHeaderStop === 1 ? 255 : (activeHeaderStop === 2 ? 255 : 78));
+            const hB = config[`headerColor${activeHeaderStop}B`] !== undefined ? config[`headerColor${activeHeaderStop}B`] : (activeHeaderStop === 1 ? 204 : (activeHeaderStop === 2 ? 255 : 221));
+            el.sliderHeaderR.value = hR;
+            el.sliderHeaderG.value = hG;
+            el.sliderHeaderB.value = hB;
+
+            el.selectBackground.value = config.backgroundAnim;
+            el.sliderBgOpacity.value = config.bgAlpha !== undefined ? config.bgAlpha : 100;
+            el.selectFont.value = config.fontFamily;
+            el.sliderFontSize.value = config.fontSize;
+            el.sliderNameSpacing.value = config.nameSpacing || 12;
+            el.sliderColorR.value = config.colorR;
+            el.sliderColorG.value = config.colorG;
+            el.sliderColorB.value = config.colorB;
+            el.sliderSpeed.value = config.scrollSpeed;
+            el.selectDirection.value = config.scrollDirection;
+            el.selectGrouping.value = config.grouping;
+
+            // Load offline Patreon CSV subscribers if present
+            try {
+                const csvData = localStorage.getItem('offline_patreon_subscribers');
+                if (csvData) {
+                    state.patreonSupporters = JSON.parse(csvData);
+                    el.csvStatus.textContent = `${state.patreonSupporters.length} patrons loaded from CSV`;
+                }
+            } catch (e) {}
+
+            applyStyles();
+        }
+
+        function saveConfig() {
+            const trigVal = el.inputWsTrigger.value.trim();
+            config.requestTrigger = trigVal;
+            config.responseTrigger = trigVal;
+            config.title = el.inputTitle.value.trim();
+            config.subtitle = el.inputSubtitle.value.trim();
+            
+            // Save active header stop values from sliders
+            config[`headerColor${activeHeaderStop}R`] = parseInt(el.sliderHeaderR.value) !== undefined ? parseInt(el.sliderHeaderR.value) : 255;
+            config[`headerColor${activeHeaderStop}G`] = parseInt(el.sliderHeaderG.value) !== undefined ? parseInt(el.sliderHeaderG.value) : 255;
+            config[`headerColor${activeHeaderStop}B`] = parseInt(el.sliderHeaderB.value) !== undefined ? parseInt(el.sliderHeaderB.value) : 255;
+
+            config.backgroundAnim = el.selectBackground.value;
+            config.bgAlpha = parseInt(el.sliderBgOpacity.value) !== undefined ? parseInt(el.sliderBgOpacity.value) : 100;
+            config.fontFamily = el.selectFont.value;
+            config.fontSize = parseInt(el.sliderFontSize.value) || 32;
+            config.nameSpacing = parseInt(el.sliderNameSpacing.value) || 12;
+            config.colorR = parseInt(el.sliderColorR.value) || 255;
+            config.colorG = parseInt(el.sliderColorG.value) || 255;
+            config.colorB = parseInt(el.sliderColorB.value) || 255;
+            config.scrollSpeed = parseFloat(el.sliderSpeed.value) || 1.0;
+            config.scrollDirection = el.selectDirection.value;
+            config.grouping = el.selectGrouping.value;
+
+            try {
+                localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+            } catch (e) {}
+
+            applyStyles();
+        }
+
+        function applyStyles() {
+            // Apply header texts
+            el.displayTitle.textContent = config.title;
+            el.displaySubtitle.textContent = config.subtitle;
+
+            // Apply font family
+            el.creditsViewport.style.fontFamily = config.fontFamily;
+
+            // Apply font size
+            el.valFontSize.textContent = `${config.fontSize}px`;
+            el.creditsViewport.style.fontSize = `${config.fontSize}px`;
+
+            // Apply name spacing
+            const spacing = config.nameSpacing || 12;
+            el.valNameSpacing.textContent = `${spacing}px`;
+            el.creditsViewport.style.setProperty('--name-spacing', `${spacing}px`);
+
+            // Apply RGB colors
+            el.valColorR.textContent = config.colorR;
+            el.valColorG.textContent = config.colorG;
+            el.valColorB.textContent = config.colorB;
+            el.colorPreview.style.backgroundColor = `rgb(${config.colorR}, ${config.colorG}, ${config.colorB})`;
+            const toHex = (c) => {
+                const hex = c.toString(16);
+                return hex.length === 1 ? "0" + hex : hex;
+            };
+            el.colorHex.textContent = `#${toHex(config.colorR)}${toHex(config.colorG)}${toHex(config.colorB)}`.toUpperCase();
+            el.creditsViewport.style.color = `rgb(${config.colorR}, ${config.colorG}, ${config.colorB})`;
+
+            // Apply Header Stop RGB colors
+            const hColor1R = config.headerColor1R !== undefined ? config.headerColor1R : 0;
+            const hColor1G = config.headerColor1G !== undefined ? config.headerColor1G : 255;
+            const hColor1B = config.headerColor1B !== undefined ? config.headerColor1B : 204;
+
+            const hColor2R = config.headerColor2R !== undefined ? config.headerColor2R : 255;
+            const hColor2G = config.headerColor2G !== undefined ? config.headerColor2G : 255;
+            const hColor2B = config.headerColor2B !== undefined ? config.headerColor2B : 255;
+
+            const hColor3R = config.headerColor3R !== undefined ? config.headerColor3R : 157;
+            const hColor3G = config.headerColor3G !== undefined ? config.headerColor3G : 78;
+            const hColor3B = config.headerColor3B !== undefined ? config.headerColor3B : 221;
+
+            // Sync active stop slider values display
+            const curR = config[`headerColor${activeHeaderStop}R`] !== undefined ? config[`headerColor${activeHeaderStop}R`] : (activeHeaderStop === 1 ? 0 : (activeHeaderStop === 2 ? 255 : 157));
+            const curG = config[`headerColor${activeHeaderStop}G`] !== undefined ? config[`headerColor${activeHeaderStop}G`] : (activeHeaderStop === 1 ? 255 : (activeHeaderStop === 2 ? 255 : 78));
+            const curB = config[`headerColor${activeHeaderStop}B`] !== undefined ? config[`headerColor${activeHeaderStop}B`] : (activeHeaderStop === 1 ? 204 : (activeHeaderStop === 2 ? 255 : 221));
+
+            el.valHeaderR.textContent = curR;
+            el.valHeaderG.textContent = curG;
+            el.valHeaderB.textContent = curB;
+            el.headerColorPreview.style.backgroundColor = `rgb(${curR}, ${curG}, ${curB})`;
+            el.headerColorHex.textContent = `#${toHex(curR)}${toHex(curG)}${toHex(curB)}`.toUpperCase();
+
+            // Set Title Gradient Background
+            const c1 = `rgb(${hColor1R}, ${hColor1G}, ${hColor1B})`;
+            const c2 = `rgb(${hColor2R}, ${hColor2G}, ${hColor2B})`;
+            const c3 = `rgb(${hColor3R}, ${hColor3G}, ${hColor3B})`;
+            const gradientStr = `linear-gradient(135deg, ${c1} 0%, ${c2} 50%, ${c3} 100%)`;
+
+            el.displayTitle.style.background = gradientStr;
+            el.displayTitle.style.webkitBackgroundClip = 'text';
+            el.displayTitle.style.webkitTextFillColor = 'transparent';
+            el.displayTitle.style.color = 'transparent'; // Fallback
+
+            // Set Subtitle color matching Center color stop (c2)
+            el.displaySubtitle.style.color = c2;
+
+            // Apply background opacity
+            const alpha = config.bgAlpha !== undefined ? config.bgAlpha : 100;
+            el.valBgOpacity.textContent = `${alpha}%`;
+            document.body.style.backgroundColor = `rgba(5, 5, 5, ${alpha / 100})`;
+
+            // Apply speed
+            el.valSpeed.textContent = config.scrollSpeed.toFixed(1);
+
+            // Apply layout direction
+            if (config.scrollDirection === 'vertical') {
+                el.creditsViewport.classList.remove('horizontal-mode');
+            } else {
+                el.creditsViewport.classList.add('horizontal-mode');
+            }
+
+            // Background canvas display toggling
+            const heartsCanvas = document.getElementById('canvas-hearts');
+            const fireworksCanvas = document.getElementById('fireworks-canvas');
+            
+            if (heartsCanvas) heartsCanvas.style.display = (config.backgroundAnim === 'both' || config.backgroundAnim === 'hearts') ? 'block' : 'none';
+            if (fireworksCanvas) fireworksCanvas.style.display = (config.backgroundAnim === 'both' || config.backgroundAnim === 'fireworks') ? 'block' : 'none';
+
+            resetScrollPosition();
+            renderSupporters();
+        }
+
+        function showToast(message, type = 'info') {
+            el.toastMessage.textContent = message;
+            el.toast.className = `toast show toast-${type}`;
+            let iconClass = 'fa-solid fa-circle-info';
+            if (type === 'success') iconClass = 'fa-solid fa-circle-check';
+            if (type === 'error') iconClass = 'fa-solid fa-triangle-exclamation';
+            el.toastIcon.className = iconClass;
+
+            setTimeout(() => {
+                el.toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // ==========================================================================
+        // UI Toggling
+        // ==========================================================================
+        function toggleSettingsPanel(show) {
+            if (show) {
+                el.settingsPanel.classList.add('panel-visible');
+            } else {
+                el.settingsPanel.classList.remove('panel-visible');
+            }
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                const isVisible = el.settingsPanel.classList.contains('panel-visible');
+                toggleSettingsPanel(!isVisible);
+            }
+        });
+
+        document.body.addEventListener('dblclick', (e) => {
+            if (el.settingsPanel.contains(e.target)) return;
+            const isVisible = el.settingsPanel.classList.contains('panel-visible');
+            toggleSettingsPanel(!isVisible);
+        });
+
+        el.btnHidePanel.addEventListener('click', () => toggleSettingsPanel(false));
+
+        // Connect inputs to auto-save and apply
+        const inputsToBind = [
+            el.inputWsTrigger, el.inputTitle, el.inputSubtitle,
+            el.sliderHeaderR, el.sliderHeaderG, el.sliderHeaderB,
+            el.selectBackground, el.sliderBgOpacity, el.selectFont, el.sliderFontSize, el.sliderNameSpacing, el.sliderColorR,
+            el.sliderColorG, el.sliderColorB, el.sliderSpeed, el.selectDirection, el.selectGrouping
+        ];
+        inputsToBind.forEach(input => {
+            input.addEventListener('input', saveConfig);
+            input.addEventListener('change', saveConfig);
+        });
+
+        el.btnResetScroll.addEventListener('click', resetScrollPosition);
+        el.btnToggleScroll.addEventListener('click', () => {
+            state.isPlaying = !state.isPlaying;
+            const playIcon = state.isPlaying ? 'fa-solid fa-pause' : 'fa-solid fa-play';
+            el.btnToggleScroll.innerHTML = `<i class="${playIcon}"></i> ${state.isPlaying ? 'Pause' : 'Resume'}`;
+        });
+
+        // Header Color Stop selector buttons
+        const setupStopBtn = (btn, stopNum) => {
+            btn.addEventListener('click', () => {
+                activeHeaderStop = stopNum;
+                [el.btnStop1, el.btnStop2, el.btnStop3].forEach((b, idx) => {
+                    if (idx + 1 === stopNum) b.classList.add('active');
+                    else b.classList.remove('active');
+                });
+
+                const r = config[`headerColor${stopNum}R`] !== undefined ? config[`headerColor${stopNum}R`] : (stopNum === 1 ? 0 : (stopNum === 2 ? 255 : 157));
+                const g = config[`headerColor${stopNum}G`] !== undefined ? config[`headerColor${stopNum}G`] : (stopNum === 1 ? 255 : (stopNum === 2 ? 255 : 78));
+                const b = config[`headerColor${stopNum}B`] !== undefined ? config[`headerColor${stopNum}B`] : (stopNum === 1 ? 204 : (stopNum === 2 ? 255 : 221));
+
+                el.sliderHeaderR.value = r;
+                el.sliderHeaderG.value = g;
+                el.sliderHeaderB.value = b;
+
+                applyStyles();
+            });
+        };
+        setupStopBtn(el.btnStop1, 1);
+        setupStopBtn(el.btnStop2, 2);
+        setupStopBtn(el.btnStop3, 3);
+
+        // Mouse glow
+        document.addEventListener('mousemove', (e) => {
+            document.documentElement.style.setProperty('--x', e.clientX + 'px');
+            document.documentElement.style.setProperty('--y', e.clientY + 'px');
+        });
+
+        // ==========================================================================
+        // CSV Fallback Parser
+        // ==========================================================================
+        el.btnUnloadCsv.addEventListener('click', () => {
+            state.patreonSupporters = [];
+            try {
+                localStorage.removeItem('offline_patreon_subscribers');
+            } catch (err) {}
+            
+            renderSupporters();
+            resetScrollPosition();
+            el.csvStatus.textContent = "No CSV file loaded. Using stream network.";
+            el.inputCsvFile.value = ""; // Reset file input
+            showToast("Offline CSV supporters cleared.", "success");
+        });
+
+        el.btnSimulateWs.addEventListener('click', () => {
+            // Instantly populate diverse fake names for layout adjustments offline
+            state.wsSubscribers = [
+                { name: "NinjaStreamFan", platform: "twitch", tier: "Twitch Subscribers" },
+                { name: "GamerGirl99", platform: "twitch", tier: "Twitch Subscribers" },
+                { name: "LofiVibesOnly", platform: "twitch", tier: "Twitch Subscribers" },
+                { name: "xQcWatcher", platform: "twitch", tier: "Twitch Subscribers" },
+                { name: "GreenKickSupporter", platform: "kick", tier: "Kick Subscribers" },
+                { name: "SubMasterKick", platform: "kick", tier: "Kick Subscribers" },
+                { name: "KickValkyrie", platform: "kick", tier: "Kick Subscribers" },
+                { name: "YTCreatorFan", platform: "youtube", tier: "YouTube Subscribers" },
+                { name: "TechReviewerPro", platform: "youtube", tier: "YouTube Subscribers" },
+                { name: "VlogEnjoyer", platform: "youtube", tier: "YouTube Subscribers" }
+            ];
+            state.patreonSupporters = [
+                { name: "Galactic Patron", platform: "patreon", tier: "Diamond Tier" },
+                { name: "Supernova Supporter", platform: "patreon", tier: "Diamond Tier" },
+                { name: "Nebula Knight", platform: "patreon", tier: "Platinum Tier" },
+                { name: "Cosmic Voyager", platform: "patreon", tier: "Platinum Tier" },
+                { name: "Solar Wind", platform: "patreon", tier: "Gold Tier" },
+                { name: "Star Dust", platform: "patreon", tier: "Gold Tier" },
+                { name: "Asteroid Miner", platform: "patreon", tier: "Silver Tier" },
+                { name: "Comet Rider", platform: "patreon", tier: "Silver Tier" },
+                { name: "Gravity Bender", platform: "patreon", tier: "Bronze Tier" },
+                { name: "Orbit Observer", platform: "patreon", tier: "Bronze Tier" }
+            ];
+            renderSupporters();
+            resetScrollPosition();
+            showToast("Mock supporters loaded for offline preview!", "success");
+        });
+
+        el.btnTriggerCsv.addEventListener('click', () => el.inputCsvFile.click());
+        el.inputCsvFile.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const text = e.target.result;
+                const parsedList = parseCSV(text);
+
+                if (parsedList.length === 0) {
+                    showToast('No valid patrons found in CSV.', 'error');
+                    el.csvStatus.textContent = 'Failed to parse CSV file.';
+                    return;
+                }
+
+                state.patreonSupporters = parsedList;
+                try {
+                    localStorage.setItem('offline_patreon_subscribers', JSON.stringify(parsedList));
+                } catch (err) {}
+
+                renderSupporters();
+                resetScrollPosition();
+                el.csvStatus.textContent = `Loaded: ${parsedList.length} CSV patrons`;
+                showToast(`Successfully imported ${parsedList.length} offline supporters!`, 'success');
+            };
+            reader.readAsText(file);
+        });
+
+        function parseCSV(text) {
+            const lines = text.split('\n').map(r => r.trim()).filter(r => r.length > 0);
+            if (lines.length === 0) return [];
+
+            const rows = lines.map(line => {
+                const result = [];
+                let current = '';
+                let inQuotes = false;
+                for (let i = 0; i < line.length; i++) {
+                    const char = line[i];
+                    if (char === '"') {
+                        inQuotes = !inQuotes;
+                    } else if (char === ',' && !inQuotes) {
+                        result.push(current.trim());
+                        current = '';
+                    } else {
+                        current += char;
+                    }
+                }
+                result.push(current.trim());
+                return result;
+            });
+
+            const headers = rows[0].map(h => h.toLowerCase());
+            let nameIndex = headers.findIndex(h => h.includes('name'));
+            let tierIndex = headers.findIndex(h => h.includes('tier') || h.includes('level') || h.includes('membership'));
+            let statusIndex = headers.findIndex(h => h.includes('status') || h.includes('state'));
+
+            const list = [];
+            if (nameIndex === -1) {
+                // Treated as single column of names
+                rows.forEach(row => {
+                    if (row[0]) {
+                        list.push({
+                            name: row[0],
+                            platform: 'patreon',
+                            tier: 'Supporters'
+                        });
+                    }
+                });
+                return list;
+            }
+
+            for (let i = 1; i < rows.length; i++) {
+                const row = rows[i];
+                const name = row[nameIndex];
+                if (!name) continue;
+
+                const tierName = (tierIndex !== -1 && row[tierIndex]) ? row[tierIndex] : 'Supporters';
+                const status = (statusIndex !== -1 && row[statusIndex]) ? row[statusIndex].toLowerCase() : 'active';
+                const isActive = status.includes('active') || status.includes('paid') || status.includes('current') || status === '';
+
+                if (isActive) {
+                    list.push({
+                        name: name,
+                        platform: 'patreon',
+                        tier: tierName
+                    });
+                }
+            }
+            return list;
+        }
+
+        // ==========================================================================
+        // WebSocket Connector & Query Loop
+        // ==========================================================================
+        let isWSInitialized = false;
+        function connectWebSocket() {
+            ws = new WebSocket('ws://127.0.0.1:41837');
+
+            ws.onopen = () => {
+                console.log("Connected to Theatre Engine WebSocket");
+                
+                // Immediately request the core subscribers cache (Twitch/Kick/YouTube)
+                ws.send(JSON.stringify({ type: "get_sub_cache" }));
+
+                // Query the Control Panel rule dynamically by sending the requested trigger name
+                setTimeout(() => {
+                    if (config.requestTrigger) {
+                        console.log(`Sending dynamic request trigger: "${config.requestTrigger}"`);
+                        ws.send(JSON.stringify({
+                            type: "test_sammi_trigger",
+                            trigger: config.requestTrigger
+                        }));
+                    }
+                }, 500);
+
+                // Re-poll cache if not initialized after 2 seconds
+                setTimeout(() => {
+                    if (!isWSInitialized) {
+                        ws.send(JSON.stringify({ type: "get_sub_cache" }));
+                    }
+                }, 2500);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'sub_cache') {
+                        isWSInitialized = true;
+                        processWebSocketSubscribers(data.payload);
+                    } else if (data.type === 'moderation' && data.payload) {
+                        const rawTrigger = data.payload.trigger;
+                        // Strip any "testserver " prefix prepended by Python server
+                        const cleanedTrigger = rawTrigger.startsWith("testserver ") ?
+                            rawTrigger.substring("testserver ".length) : rawTrigger;
+
+                        if (cleanedTrigger === config.responseTrigger) {
+                            console.log("Patreon subscribers response received (moderation)!");
+                            processWebSocketPatreonList(data.payload.message);
+                        }
+                    }
+                } catch (e) {
+                    console.error("Error processing websocket message:", e);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log("WebSocket closed. Reconnecting in 5s...");
+                setTimeout(connectWebSocket, 5000);
+            };
+
+            ws.onerror = (err) => {
+                console.error("WebSocket encountered error:", err);
+            };
+        }
+
+        function processWebSocketSubscribers(payload) {
+            const subList = [];
+            for (const platform in payload) {
+                for (const channel in payload[platform]) {
+                    const users = payload[platform][channel];
+                    for (const username in users) {
+                        if (users[username] === true) {
+                            subList.push({
+                                name: username,
+                                platform: platform.toLowerCase(),
+                                tier: `${platform.toUpperCase()} Subscribers`
+                            });
+                        }
+                    }
+                }
+            }
+            state.wsSubscribers = subList;
+            renderSupporters();
+            resetScrollPosition();
+        }
+
+        function processWebSocketPatreonList(rawData) {
+            if (!rawData) return;
+            
+            let payload = null;
+            if (typeof rawData === 'string') {
+                try {
+                    // Try standard JSON first
+                    payload = JSON.parse(rawData);
+                } catch (e) {
+                    try {
+                        // Fallback for single-quoted Python representations of dicts/lists/strings
+                        const jsStr = rawData
+                            .replace(/\bTrue\b/g, 'true')
+                            .replace(/\bFalse\b/g, 'false')
+                            .replace(/\bNone\b/g, 'null');
+                        payload = (new Function(`return (${jsStr})`))();
+                    } catch (err) {
+                        payload = rawData; // Keep as raw string if evaluation fails
+                    }
+                }
+            } else {
+                payload = rawData;
+            }
+
+            let list = [];
+            if (typeof payload === 'string') {
+                const names = payload.split(',').map(n => n.trim()).filter(n => n.length > 0);
+                list = names.map(name => ({
+                    name: name,
+                    platform: 'patreon',
+                    tier: 'Patreon Supporters'
+                }));
+            } else if (typeof payload === 'object' && payload) {
+                if (Array.isArray(payload)) {
+                    list = payload.map(item => {
+                        if (typeof item === 'string') {
+                            return { name: item, platform: 'patreon', tier: 'Patreon Supporters' };
+                        } else if (item && typeof item === 'object') {
+                            return {
+                                name: item.name || item.full_name || "Anonymous Patron",
+                                platform: 'patreon',
+                                tier: item.tier || item.tier_title || 'Patreon Supporters'
+                            };
+                        }
+                    }).filter(item => item);
+                } else if (payload.patreon_active_patrons && Array.isArray(payload.patreon_active_patrons)) {
+                    list = payload.patreon_active_patrons.map(item => {
+                        if (typeof item === 'string') {
+                            return { name: item, platform: 'patreon', tier: 'Patreon Supporters' };
+                        } else if (item && typeof item === 'object') {
+                            return {
+                                name: item.name || item.full_name || "Anonymous Patron",
+                                platform: 'patreon',
+                                tier: item.tier || item.tier_title || 'Patreon Supporters'
+                            };
+                        }
+                    }).filter(item => item);
+                } else if (payload.patreon_patrons_list && typeof payload.patreon_patrons_list === 'string') {
+                    const names = payload.patreon_patrons_list.split(',').map(n => n.trim()).filter(n => n.length > 0);
+                    list = names.map(name => ({
+                        name: name,
+                        platform: 'patreon',
+                        tier: 'Patreon Supporters'
+                    }));
+                }
+            }
+
+            if (list.length > 0) {
+                state.patreonSupporters = list;
+                renderSupporters();
+                resetScrollPosition();
+            } else {
+                console.warn("No Patreon supporters resolved from payload:", payload);
+            }
+        }
+
+        // ==========================================================================
+        // Render & Scrolling Loop
+        // ==========================================================================
+        function getSupportersArray() {
+            // Combine WebSockets subscribers and Patreon supporters
+            const allSupporters = [...state.wsSubscribers];
+            
+            // Avoid duplicating Patreon supporters if loaded offline vs online
+            state.patreonSupporters.forEach(p => {
+                const exists = allSupporters.some(s => s.name.toLowerCase() === p.name.toLowerCase() && s.platform === p.platform);
+                if (!exists) {
+                    allSupporters.push(p);
+                }
+            });
+
+            return allSupporters;
+        }
+
+        function renderSupporters() {
+            const list = getSupportersArray();
+            el.creditsList.innerHTML = "";
+
+            if (list.length === 0) {
+                el.creditsList.innerHTML = '<div class="credits-loading-msg">Seeking legends...</div>';
+                return;
+            }
+
+            // Shuffle slightly for variance, keeping Patreon supporters mixed if un-grouped
+            const displayList = [...list].sort(() => Math.sin(list.length) - 0.5);
+
+            if (config.grouping === 'platform') {
+                // Group by platform: Twitch, Kick, YouTube, Patreon
+                const platforms = ['twitch', 'kick', 'youtube', 'patreon'];
+                platforms.forEach(plat => {
+                    const platSubs = displayList.filter(s => s.platform === plat);
+                    if (platSubs.length === 0) return;
+
+                    const groupDiv = document.createElement('div');
+                    groupDiv.className = 'credits-tier-group';
+
+                    const titleDiv = document.createElement('div');
+                    titleDiv.className = 'credits-tier-title';
+                    titleDiv.textContent = plat === 'patreon' ? 'Patreon Supporters' : `${plat.toUpperCase()} Subscribers`;
+                    
+                    const namesDiv = document.createElement('div');
+                    namesDiv.className = 'credits-names';
+
+                    platSubs.forEach(s => {
+                        const nameItem = document.createElement('div');
+                        nameItem.className = 'credits-name-item';
+                        nameItem.innerHTML = `<span class="platform-icon ${s.platform}">${s.platform}</span>${s.name}`;
+                        namesDiv.appendChild(nameItem);
+                    });
+
+                    groupDiv.appendChild(titleDiv);
+                    groupDiv.appendChild(namesDiv);
+                    el.creditsList.appendChild(groupDiv);
+                });
+            } else if (config.grouping === 'tier') {
+                // Group by specific Patreon / platform tiers
+                const tiersMap = {};
+                displayList.forEach(s => {
+                    const tierName = s.tier || 'Supporters';
+                    if (!tiersMap[tierName]) {
+                        tiersMap[tierName] = [];
+                    }
+                    tiersMap[tierName].push(s);
+                });
+
+                Object.entries(tiersMap).forEach(([tierTitle, items]) => {
+                    if (items.length === 0) return;
+
+                    const groupDiv = document.createElement('div');
+                    groupDiv.className = 'credits-tier-group';
+
+                    const titleDiv = document.createElement('div');
+                    titleDiv.className = 'credits-tier-title';
+                    titleDiv.textContent = tierTitle;
+
+                    const namesDiv = document.createElement('div');
+                    namesDiv.className = 'credits-names';
+
+                    items.forEach(s => {
+                        const nameItem = document.createElement('div');
+                        nameItem.className = 'credits-name-item';
+                        nameItem.innerHTML = `<span class="platform-icon ${s.platform}">${s.platform}</span>${s.name}`;
+                        namesDiv.appendChild(nameItem);
+                    });
+
+                    groupDiv.appendChild(titleDiv);
+                    groupDiv.appendChild(namesDiv);
+                    el.creditsList.appendChild(groupDiv);
+                });
+            } else {
+                // Flat List
+                const namesDiv = document.createElement('div');
+                namesDiv.className = 'credits-names';
+
+                displayList.forEach(s => {
+                    const nameItem = document.createElement('div');
+                    nameItem.className = 'credits-name-item';
+                    nameItem.innerHTML = `<span class="platform-icon ${s.platform}">${s.platform}</span>${s.name}`;
+                    namesDiv.appendChild(nameItem);
+                });
+
+                el.creditsList.appendChild(namesDiv);
+            }
+
+            // Single pass rendering for full page credit roll loop
+        }
+
+        function tickScroll() {
+            const list = getSupportersArray();
+            if (state.isPlaying && list.length > 0) {
+                const speed = config.scrollSpeed;
+                const isVertical = config.scrollDirection === 'vertical';
+
+                if (isVertical) {
+                    const viewportHeight = window.innerHeight;
+                    const containerHeight = el.creditsContainer.offsetHeight;
+                    
+                    scrollPos += speed;
+                    if (scrollPos >= containerHeight) {
+                        scrollPos = -viewportHeight;
+                    }
+                    el.creditsContainer.style.transform = `translateY(${-scrollPos}px)`;
+                } else {
+                    const viewportWidth = window.innerWidth;
+                    const containerWidth = el.creditsContainer.offsetWidth;
+
+                    scrollPos += speed;
+                    if (scrollPos >= containerWidth) {
+                        scrollPos = -viewportWidth;
+                    }
+                    el.creditsContainer.style.transform = `translateX(${-scrollPos}px)`;
+                }
+            }
+
+            scrollAnimationId = requestAnimationFrame(tickScroll);
+        }
+
+        function resetScrollPosition() {
+            const list = getSupportersArray();
+            if (list.length === 0) {
+                scrollPos = 0;
+                if (config.scrollDirection === 'vertical') {
+                    el.creditsContainer.style.transform = `translateY(0px)`;
+                } else {
+                    el.creditsContainer.style.transform = `translateX(0px)`;
+                }
+                return;
+            }
+
+            if (config.scrollDirection === 'vertical') {
+                scrollPos = -window.innerHeight;
+                el.creditsContainer.style.transform = `translateY(${-scrollPos}px)`;
+            } else {
+                scrollPos = -window.innerWidth;
+                el.creditsContainer.style.transform = `translateX(${-scrollPos}px)`;
+            }
+        }
+
+        // ==========================================================================
+        // Firework Particle Engine
+        // ==========================================================================
+        const fireworksCanvas = document.getElementById('fireworks-canvas');
+        const fireworksCtx = fireworksCanvas.getContext('2d');
+        let fwWidth, fwHeight;
+
+        function resizeFireworksCanvas() {
+            fwWidth = fireworksCanvas.width = window.innerWidth;
+            fwHeight = fireworksCanvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeFireworksCanvas);
+        resizeFireworksCanvas();
+
+        class FireworkParticle {
+            constructor(x, y, color, velocity) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.velocity = velocity;
+                this.alpha = 1;
+                this.friction = 0.95;
+                this.gravity = 0.12;
+            }
+
+            draw() {
+                fireworksCtx.save();
+                fireworksCtx.globalAlpha = this.alpha;
+                fireworksCtx.beginPath();
+                fireworksCtx.arc(this.x, this.y, 2, 0, Math.PI * 2, false);
+                fireworksCtx.fillStyle = this.color;
+                fireworksCtx.fill();
+                fireworksCtx.restore();
+            }
+
+            update() {
+                this.velocity.x *= this.friction;
+                this.velocity.y *= this.friction;
+                this.velocity.y += this.gravity;
+                this.x += this.velocity.x;
+                this.y += this.velocity.y;
+                this.alpha -= 0.008;
+            }
+        }
+
+        class FireworkInstance {
+            constructor() {
+                this.x = Math.random() * fwWidth;
+                this.y = fwHeight;
+                this.targetY = Math.random() * (fwHeight * 0.6);
+                this.color = `hsl(${Math.random() * 360}, 100%, 75%)`;
+                this.velocity = { x: (Math.random() - 0.5) * 3, y: -Math.random() * 12 - 8 };
+                this.particles = [];
+                this.exploded = false;
+            }
+
+            draw() {
+                if (!this.exploded) {
+                    fireworksCtx.beginPath();
+                    fireworksCtx.arc(this.x, this.y, 3, 0, Math.PI * 2, false);
+                    fireworksCtx.fillStyle = this.color;
+                    fireworksCtx.fill();
+                }
+
+                this.particles.forEach((p, i) => {
+                    p.draw();
+                    p.update();
+                    if (p.alpha <= 0) this.particles.splice(i, 1);
+                });
+            }
+
+            update() {
+                if (!this.exploded) {
+                    this.x += this.velocity.x;
+                    this.y += this.velocity.y;
+                    this.velocity.y += 0.08;
+                    if (this.velocity.y >= 0 || this.y <= this.targetY) {
+                        this.explode();
+                    }
+                }
+            }
+
+            explode() {
+                this.exploded = true;
+                const particleCount = 60;
+                for (let i = 0; i < particleCount; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = Math.random() * 6 + 2;
+                    this.particles.push(new FireworkParticle(
+                        this.x, this.y, this.color,
+                        { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed }
+                    ));
+                }
+            }
+        }
+
+        const fireworksList = [];
+        function animateFireworks() {
+            if (config.backgroundAnim === 'both' || config.backgroundAnim === 'fireworks') {
+                fireworksCtx.fillStyle = 'rgba(5, 5, 5, 0.15)';
+                fireworksCtx.fillRect(0, 0, fwWidth, fwHeight);
+
+                if (Math.random() < 0.04) {
+                    fireworksList.push(new FireworkInstance());
+                }
+
+                fireworksList.forEach((fw, i) => {
+                    fw.draw();
+                    fw.update();
+                    if (fw.exploded && fw.particles.length === 0) {
+                        fireworksList.splice(i, 1);
+                    }
+                });
+            } else {
+                fireworksCtx.clearRect(0, 0, fwWidth, fwHeight);
+            }
+            requestAnimationFrame(animateFireworks);
+        }
+
+        // ==========================================================================
+        // Hearts Particle Engine
+        // ==========================================================================
+        let canvasHearts = document.getElementById('canvas-hearts');
+        let ctxHearts = canvasHearts.getContext('2d');
+        let heartsArray = [];
+
+        function resizeHeartsCanvas() {
+            canvasHearts.width = window.innerWidth;
+            canvasHearts.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeHeartsCanvas);
+        resizeHeartsCanvas();
+
+        class HeartParticle {
+            constructor() {
+                this.reset();
+                this.y = Math.random() * canvasHearts.height;
+            }
+
+            reset() {
+                this.x = Math.random() * canvasHearts.width;
+                this.y = canvasHearts.height + Math.random() * 40 + 10;
+                this.size = Math.random() * 12 + 6;
+                this.speed = Math.random() * 0.8 + 0.3;
+                this.wobbleSpeed = Math.random() * 0.02 + 0.01;
+                this.wobbleRange = Math.random() * 15 + 5;
+                this.angle = Math.random() * Math.PI * 2;
+                this.opacity = Math.random() * 0.3 + 0.15;
+                
+                const hues = [350, 355, 0, 15, 320, 335];
+                this.color = `hsla(${hues[Math.floor(Math.random() * hues.length)]}, 85%, 65%, ${this.opacity})`;
+            }
+
+            update() {
+                this.y -= this.speed;
+                this.angle += this.wobbleSpeed;
+                this.xOffset = Math.sin(this.angle) * this.wobbleRange;
+
+                if (this.y < -this.size * 2) {
+                    this.reset();
+                }
+            }
+
+            draw() {
+                ctxHearts.save();
+                ctxHearts.fillStyle = this.color;
+                ctxHearts.translate(this.x + this.xOffset, this.y);
+                ctxHearts.beginPath();
+                const s = this.size;
+                ctxHearts.moveTo(0, -s / 4);
+                ctxHearts.bezierCurveTo(-s / 2, -s / 2 - s / 4, -s, -s / 4, -s, s / 4);
+                ctxHearts.bezierCurveTo(-s, s * 0.7, -s / 4, s, 0, s * 1.3);
+                ctxHearts.bezierCurveTo(s / 4, s, s, s * 0.7, s, s / 4);
+                ctxHearts.bezierCurveTo(s, -s / 4, s / 2, -s / 2 - s / 4, 0, -s / 4);
+                ctxHearts.closePath();
+                ctxHearts.fill();
+                ctxHearts.restore();
+            }
+        }
+
+        function initHearts() {
+            const particleCount = 35;
+            heartsArray = [];
+            for (let i = 0; i < particleCount; i++) {
+                heartsArray.push(new HeartParticle());
+            }
+        }
+
+        function animateHearts() {
+            if (config.backgroundAnim === 'both' || config.backgroundAnim === 'hearts') {
+                ctxHearts.clearRect(0, 0, canvasHearts.width, canvasHearts.height);
+                heartsArray.forEach(heart => {
+                    heart.update();
+                    heart.draw();
+                });
+            } else {
+                ctxHearts.clearRect(0, 0, canvasHearts.width, canvasHearts.height);
+            }
+            requestAnimationFrame(animateHearts);
+        }
+
+        function initBroadcastChannel() {
+            try {
+                htmlBc = new BroadcastChannel("theatre_html_connector");
+                htmlBc.onmessage = (event) => {
+                    const data = event.data;
+                    if (data && data.type === "html_response" && data.trigger === config.responseTrigger) {
+                        console.log("Patreon subscribers response received via BroadcastChannel:", data.var);
+                        lastResponseTime = Date.now();
+                        processWebSocketPatreonList(data.var);
+                        showToast("Supporters synced standalone!", "success");
+                    }
+                };
+            } catch (e) {
+                console.warn("BroadcastChannel not supported or failed to initialize:", e);
+            }
+        }
+
+        function initLocalStorageListener() {
+            window.addEventListener('storage', (event) => {
+                const expectedKey = `html_response_${config.responseTrigger}`;
+                if (event.key === expectedKey && event.newValue) {
+                    try {
+                        const parsed = JSON.parse(event.newValue);
+                        console.log("Patreon subscribers response received via localStorage:", parsed.var);
+                        lastResponseTime = Date.now();
+                        processWebSocketPatreonList(parsed.var);
+                        showToast("Supporters synced via LocalStorage!", "success");
+                    } catch (e) {
+                        console.error("Error parsing localStorage response:", e);
+                    }
+                }
+            });
+        }
+
+        function requestPayloadStandalone() {
+            if (htmlBc && config.requestTrigger) {
+                console.log(`Requesting standalone trigger "${config.requestTrigger}" over BroadcastChannel`);
+                htmlBc.postMessage({
+                    type: "request_payload",
+                    trigger: config.requestTrigger
+                });
+            }
+        }
+
+        // ==========================================================================
+        // App Bootstrap
+        // ==========================================================================
+        document.addEventListener('DOMContentLoaded', () => {
+            loadConfig();
+            initHearts();
+            
+            // Start Background Animations
+            animateFireworks();
+            animateHearts();
+
+            // Start Scrolling Loops
+            tickScroll();
+
+            // Initialize Standalone local communication
+            initBroadcastChannel();
+            initLocalStorageListener();
+            setTimeout(requestPayloadStandalone, 600);
+
+            // Connect WebSocket
+            connectWebSocket();
+            showToast("Supporter overlay initialized", "info");
+        });
+    </script>
+</body>
+</html>

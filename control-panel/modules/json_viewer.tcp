@@ -1,0 +1,346 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "json_viewer";
+    let originalDispatchTrigger = null;
+    let uiObserver = null;
+    let uiCheckInterval = null;
+    const maxLogEntries = 20;
+    const capturedPayloads = [];
+    let isPaused = false;
+
+    // JSON Syntax Highlighting CSS
+    const STYLES = `
+        .json-viewer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 10px;
+            margin-bottom: 6px;
+        }
+        .json-viewer-title {
+            font-size: 0.85em;
+            text-transform: uppercase;
+            color: #888;
+            font-weight: bold;
+            letter-spacing: 0.05em;
+        }
+        .json-viewer-log {
+            max-height: 280px;
+            overflow-y: auto;
+            background: #111;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            font-family: 'Outfit', sans-serif;
+            scrollbar-width: thin;
+            scrollbar-color: #555 #111;
+        }
+        .json-viewer-log::-webkit-scrollbar {
+            width: 6px;
+        }
+        .json-viewer-log::-webkit-scrollbar-track {
+            background: #111;
+        }
+        .json-viewer-log::-webkit-scrollbar-thumb {
+            background: #555;
+            border-radius: 3px;
+        }
+        .json-entry {
+            background: #1c1c1c;
+            border: 1px solid #2d2d2d;
+            border-radius: 4px;
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            transition: all 0.2s ease;
+        }
+        .json-entry-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.85em;
+            cursor: pointer;
+            user-select: none;
+        }
+        .json-entry-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .json-entry-time {
+            color: #666;
+            font-family: monospace;
+        }
+        .json-entry-type {
+            color: var(--accent, #007acc);
+            font-weight: bold;
+            font-family: monospace;
+        }
+        .json-entry-btn {
+            background: #2a2a2a;
+            color: #ccc;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 0.8em;
+            cursor: pointer;
+            outline: none;
+            transition: all 0.15s ease;
+        }
+        .json-entry-btn:hover {
+            background: #3a3a3a;
+            color: #fff;
+            border-color: #666;
+        }
+        .json-entry-content {
+            margin-top: 8px;
+            background: #0c0c0c;
+            border: 1px solid #222;
+            border-radius: 4px;
+            padding: 8px;
+            max-height: 250px;
+            overflow: auto;
+            white-space: pre;
+            font-family: Consolas, Monaco, monospace;
+            font-size: 0.85em;
+            line-height: 1.4;
+        }
+        .json-key { color: #ff79c6; font-weight: bold; }
+        .json-string { color: #f1fa8c; }
+        .json-number { color: #bd93f9; }
+        .json-boolean { color: #50fa7b; }
+        .json-null { color: #8be9fd; }
+    `;
+
+    // Inject styling
+    function injectStyles() {
+        const styleId = "json-viewer-styles";
+        if (document.getElementById(styleId)) return;
+        const style = document.createElement("style");
+        style.id = styleId;
+        style.innerHTML = STYLES;
+        document.head.appendChild(style);
+    }
+
+    function removeStyles() {
+        const style = document.getElementById("json-viewer-styles");
+        if (style) style.remove();
+    }
+
+    // JSON syntax highlighting parser
+    function syntaxHighlight(jsonObj) {
+        let json = JSON.stringify(jsonObj, null, 2);
+        json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g, function (match) {
+            let cls = 'number';
+            if (/^"/.test(match)) {
+                if (/:$/.test(match)) {
+                    cls = 'key';
+                } else {
+                    cls = 'string';
+                }
+            } else if (/true|false/.test(match)) {
+                cls = 'boolean';
+            } else if (/null/.test(match)) {
+                cls = 'null';
+            }
+            return '<span class="json-' + cls + '">' + match + '</span>';
+        });
+    }
+
+    // Build the visual container inside the module card
+    function ensureUI() {
+        if (document.getElementById("json-viewer-root")) return;
+
+        const container = document.getElementById('loaded-modules-container');
+        if (!container) return;
+
+        const cardHeaders = container.querySelectorAll('.command-row-header strong');
+        let ourCard = null;
+        cardHeaders.forEach(header => {
+            if (header.innerText === "JSON Payload Viewer") {
+                ourCard = header.closest('.command-row');
+            }
+        });
+
+        if (!ourCard) return;
+
+        const root = document.createElement("div");
+        root.id = "json-viewer-root";
+        root.innerHTML = `
+            <div class="json-viewer-header">
+                <span class="json-viewer-title">Intercepted Payloads</span>
+                <div style="display: flex; gap: 6px;">
+                    <button class="btn-green" id="json-viewer-pause-btn" style="font-size: 0.8em; padding: 4px 10px; margin: 0; background: ${isPaused ? '#22c55e' : '#007acc'}; border-color: ${isPaused ? '#22c55e' : '#007acc'};">
+                        ${isPaused ? '▶️ Resume' : '⏸️ Pause'}
+                    </button>
+                    <button class="btn-red" id="json-viewer-clear-btn" style="font-size: 0.8em; padding: 4px 10px; margin: 0;">🗑️ Clear Logs</button>
+                </div>
+            </div>
+            <div class="json-viewer-log" id="json-viewer-log-list">
+                <p style="color: #666; font-size: 0.85em; margin: 0; font-style: italic; text-align: center; padding: 10px 0;">Waiting for incoming trigger events...</p>
+            </div>
+        `;
+
+        ourCard.appendChild(root);
+
+        const clearBtn = document.getElementById("json-viewer-clear-btn");
+        if (clearBtn) {
+            clearBtn.onclick = () => {
+                capturedPayloads.length = 0;
+                renderAllEntries();
+            };
+        }
+
+        const pauseBtn = document.getElementById("json-viewer-pause-btn");
+        if (pauseBtn) {
+            pauseBtn.onclick = () => {
+                isPaused = !isPaused;
+                pauseBtn.innerHTML = isPaused ? "▶️ Resume" : "⏸️ Pause";
+                pauseBtn.style.background = isPaused ? "#22c55e" : "#007acc";
+                pauseBtn.style.borderColor = isPaused ? "#22c55e" : "#007acc";
+            };
+        }
+
+        renderAllEntries();
+    }
+
+    function renderAllEntries() {
+        const list = document.getElementById("json-viewer-log-list");
+        if (!list) return;
+
+        if (capturedPayloads.length === 0) {
+            list.innerHTML = `<p style="color: #666; font-size: 0.85em; margin: 0; font-style: italic; text-align: center; padding: 10px 0;">Waiting for incoming trigger events...</p>`;
+            return;
+        }
+
+        list.innerHTML = "";
+        capturedPayloads.forEach(entry => {
+            const entryEl = document.createElement("div");
+            entryEl.className = "json-entry";
+            entryEl.innerHTML = `
+                <div class="json-entry-header">
+                    <div class="json-entry-info">
+                        <span class="json-entry-time">[${entry.time}]</span>
+                        <span class="json-entry-type">${entry.triggerName}</span>
+                    </div>
+                    <button class="json-entry-btn">Expand</button>
+                </div>
+                <div class="json-entry-content" style="display: none;">${syntaxHighlight(entry.payload)}</div>
+            `;
+
+            const header = entryEl.querySelector(".json-entry-header");
+            const content = entryEl.querySelector(".json-entry-content");
+            const btn = entryEl.querySelector(".json-entry-btn");
+
+            const toggle = () => {
+                const isHidden = content.style.display === "none";
+                content.style.display = isHidden ? "block" : "none";
+                btn.innerText = isHidden ? "Collapse" : "Expand";
+            };
+
+            header.onclick = toggle;
+            list.appendChild(entryEl);
+        });
+    }
+
+    function logPayload(triggerType, eventData, payload) {
+        if (isPaused) return;
+
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString() + "." + String(now.getMilliseconds()).padStart(3, "0");
+        const triggerName = `${triggerType}:${eventData.eventType || ''}`;
+
+        const entry = {
+            time: timeStr,
+            triggerName,
+            payload
+        };
+
+        capturedPayloads.unshift(entry);
+        if (capturedPayloads.length > maxLogEntries) {
+            capturedPayloads.pop();
+        }
+
+        ensureUI();
+        renderAllEntries();
+    }
+
+    // Intercept dispatches
+    function hookDispatchTrigger() {
+        if (window.TheaterController && !originalDispatchTrigger) {
+            originalDispatchTrigger = window.TheaterController.dispatchTrigger;
+            window.TheaterController.dispatchTrigger = function(triggerType, eventData, payload) {
+                try {
+                    if (payload) {
+                        logPayload(triggerType, eventData, payload);
+                    }
+                } catch (e) {
+                    console.error("JSON Viewer intercept failed", e);
+                }
+                return originalDispatchTrigger.apply(this, arguments);
+            };
+            logMsg("[JSON Viewer] Hooked window.TheaterController.dispatchTrigger.");
+        }
+    }
+
+    function unhookDispatchTrigger() {
+        if (window.TheaterController && originalDispatchTrigger) {
+            window.TheaterController.dispatchTrigger = originalDispatchTrigger;
+            originalDispatchTrigger = null;
+            logMsg("[JSON Viewer] Unhooked window.TheaterController.dispatchTrigger.");
+        }
+    }
+
+    // Setup MutationObserver and check loop to restore UI if rerendered
+    function startUIWatcher() {
+        stopUIWatcher();
+
+        // 1. Double-check interval
+        uiCheckInterval = setInterval(ensureUI, 1000);
+
+        // 2. DOM Mutation Observer
+        const container = document.getElementById('loaded-modules-container');
+        if (container) {
+            uiObserver = new MutationObserver(() => {
+                ensureUI();
+            });
+            uiObserver.observe(container, { childList: true, subtree: true });
+        }
+    }
+
+    function stopUIWatcher() {
+        clearInterval(uiCheckInterval);
+        uiCheckInterval = null;
+        if (uiObserver) {
+            uiObserver.disconnect();
+            uiObserver = null;
+        }
+    }
+
+    // Register Module
+    window.TheaterController.registerModule(MODULE_ID, {
+        name: "JSON Payload Viewer",
+        description: "Displays the raw JSON payloads of all incoming events and triggers in real-time, with an expand/collapse viewer.",
+        configFields: [],
+        onLoad(moduleConfig) {
+            injectStyles();
+            ensureUI();
+            hookDispatchTrigger();
+            startUIWatcher();
+            logMsg("[JSON Viewer] Module loaded successfully.");
+        },
+        onUnload() {
+            unhookDispatchTrigger();
+            stopUIWatcher();
+            const root = document.getElementById("json-viewer-root");
+            if (root) root.remove();
+            removeStyles();
+            logMsg("[JSON Viewer] Module unloaded.");
+        }
+    });
+
+})();

@@ -1,0 +1,401 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "obs_controls";
+
+    function handleStreamStateChanged(data) {
+        logMsg(`[OBS Controls] Stream state changed: ${data.outputState}`);
+        const payload = {
+            username: "OBS",
+            message: data.outputState,
+            customData: data
+        };
+        if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+            window.TheaterController.dispatchTrigger("obs_stream_event", {
+                eventType: "stream",
+                outputState: data.outputState
+            }, payload);
+        }
+    }
+
+    function handleRecordStateChanged(data) {
+        logMsg(`[OBS Controls] Record state changed: ${data.outputState}`);
+        const payload = {
+            username: "OBS",
+            message: data.outputState,
+            customData: data
+        };
+        if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+            window.TheaterController.dispatchTrigger("obs_stream_event", {
+                eventType: "record",
+                outputState: data.outputState
+            }, payload);
+        }
+    }
+
+    window.TheaterController.registerModule(MODULE_ID, {
+        name: "OBS Controls",
+        description: "Provides explicit On/Off commands for OBS sources, filters, audio volume, and direct filter setting control. Uses the global window.obs WebSocket connection.",
+        configFields: [],
+        onLoad(moduleConfig) {
+            logMsg("[OBS Controls] Module loaded. Reuses the global OBS WebSocket connection.");
+            if (window.obs) {
+                window.obs.on('StreamStateChanged', handleStreamStateChanged);
+                window.obs.on('RecordStateChanged', handleRecordStateChanged);
+            }
+        },
+        onUnload() {
+            logMsg("[OBS Controls] Module unloaded.");
+            if (window.obs) {
+                window.obs.off('StreamStateChanged', handleStreamStateChanged);
+                window.obs.off('RecordStateChanged', handleRecordStateChanged);
+            }
+        }
+    });
+
+    // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+    function isOBSConnected() {
+        const dot = document.getElementById('obs-dot');
+        return dot && dot.classList.contains('connected');
+    }
+
+    /**
+     * Resolve the actual scene name.
+     * If `sceneName` is blank/null, query OBS for the current program scene.
+     */
+    async function resolveScene(sceneName) {
+        if (sceneName && sceneName.trim()) return sceneName.trim();
+        const resp = await window.obs.call("GetCurrentProgramScene");
+        return resp ? resp.currentProgramSceneName : null;
+    }
+
+    /**
+     * Get the sceneItemId for a source inside a scene.
+     * Returns null if not found.
+     */
+    async function getItemId(sceneName, sourceName) {
+        const resp = await window.obs.call("GetSceneItemId", {
+            sceneName: sceneName,
+            sourceName: sourceName
+        });
+        return resp ? resp.sceneItemId : null;
+    }
+
+    // ─── Command: Set Source Visibility ──────────────────────────────────────────
+
+    window.TheaterController.registerCommand("obs_set_source_visibility", async (inputs) => {
+        if (!isOBSConnected()) {
+            logMsg("[OBS Controls] Source Visibility: OBS not connected.", true);
+            return;
+        }
+
+        const source = (inputs.source || "").trim();
+        if (!source) {
+            logMsg("[OBS Controls] Source Visibility: No source name provided.", true);
+            return;
+        }
+
+        const enabled = inputs.status === "On";
+
+        try {
+            const scene = await resolveScene(inputs.scene);
+            if (!scene) {
+                logMsg("[OBS Controls] Source Visibility: Could not determine scene.", true);
+                return;
+            }
+
+            const itemId = await getItemId(scene, source);
+            if (itemId === null || itemId === undefined) {
+                logMsg(`[OBS Controls] Source Visibility: Could not find '${source}' in scene '${scene}'.`, true);
+                return;
+            }
+
+            await window.obs.call("SetSceneItemEnabled", {
+                sceneName: scene,
+                sceneItemId: itemId,
+                sceneItemEnabled: enabled
+            });
+
+            logMsg(`[OBS Controls] Source Visibility: '${source}' in '${scene}' → ${enabled ? "VISIBLE" : "HIDDEN"}`);
+        } catch (e) {
+            logMsg(`[OBS Controls] Source Visibility error: ${e.message || e.error || e}`, true);
+        }
+    }, {
+        label: "OBS: Set Source Visibility",
+        fields: [
+            {
+                id: "scene",
+                label: "Scene (optional — blank = current scene)",
+                type: "obs_scene",
+                default: ""
+            },
+            {
+                id: "source",
+                label: "Source",
+                type: "obs_source",
+                default: ""
+            },
+            {
+                id: "status",
+                label: "Visibility",
+                type: "select",
+                options: [
+                    { value: "On",  label: "On (Visible)" },
+                    { value: "Off", label: "Off (Hidden)" }
+                ],
+                default: "On"
+            }
+        ]
+    }, MODULE_ID);
+
+    // ─── Command: Set Filter Enabled ─────────────────────────────────────────────
+
+    window.TheaterController.registerCommand("obs_set_filter_enabled", async (inputs) => {
+        if (!isOBSConnected()) {
+            logMsg("[OBS Controls] Set Filter Enabled: OBS not connected.", true);
+            return;
+        }
+
+        const source = (inputs.source || "").trim();
+        const filter = (inputs.filter || "").trim();
+
+        if (!source || !filter) {
+            logMsg("[OBS Controls] Set Filter Enabled: Source and Filter names are required.", true);
+            return;
+        }
+
+        const enabled = inputs.status === "On";
+
+        try {
+            await window.obs.call("SetSourceFilterEnabled", {
+                sourceName: source,
+                filterName: filter,
+                filterEnabled: enabled
+            });
+
+            logMsg(`[OBS Controls] Set Filter Enabled: '${filter}' on '${source}' → ${enabled ? "ENABLED" : "DISABLED"}`);
+        } catch (e) {
+            logMsg(`[OBS Controls] Set Filter Enabled error: ${e.message || e.error || e}`, true);
+        }
+    }, {
+        label: "OBS: Set Filter Enabled",
+        fields: [
+            {
+                id: "scene",
+                label: "Scene (optional — used to scope source list only)",
+                type: "obs_scene",
+                default: ""
+            },
+            {
+                id: "source",
+                label: "Source / Scene Name",
+                type: "obs_source",
+                default: ""
+            },
+            {
+                id: "filter",
+                label: "Filter Name",
+                type: "obs_filter",
+                default: ""
+            },
+            {
+                id: "status",
+                label: "Filter State",
+                type: "select",
+                options: [
+                    { value: "On",  label: "On (Enabled)" },
+                    { value: "Off", label: "Off (Disabled)" }
+                ],
+                default: "On"
+            }
+        ]
+    }, MODULE_ID);
+
+    // ─── Command: Set Filter Settings ────────────────────────────────────────────
+
+    window.TheaterController.registerCommand("obs_set_filter", async (inputs) => {
+        if (!isOBSConnected()) {
+            logMsg("[OBS Controls] Set Filter: OBS not connected.", true);
+            return;
+        }
+
+        const source = (inputs.source || "").trim();
+        const filter = (inputs.filter || "").trim();
+        const settingKey = (inputs.settingKey || "").trim();
+        const rawValue = inputs.value;
+
+        if (!source || !filter || !settingKey) {
+            logMsg("[OBS Controls] Set Filter: Source, Filter, and Setting Key are all required.", true);
+            return;
+        }
+
+        // Coerce value type: number, boolean, or string
+        let parsedValue = rawValue;
+        const strVal = String(rawValue).trim();
+        if (strVal.toLowerCase() === "true") {
+            parsedValue = true;
+        } else if (strVal.toLowerCase() === "false") {
+            parsedValue = false;
+        } else if (!isNaN(strVal) && strVal !== "") {
+            parsedValue = Number(strVal);
+        }
+
+        try {
+            const settingsPayload = {};
+            settingsPayload[settingKey] = parsedValue;
+
+            await window.obs.call("SetSourceFilterSettings", {
+                sourceName: source,
+                filterName: filter,
+                filterSettings: settingsPayload,
+                overlay: true
+            });
+
+            logMsg(`[OBS Controls] Set Filter: '${filter}' on '${source}' → ${settingKey} = ${JSON.stringify(parsedValue)}`);
+        } catch (e) {
+            logMsg(`[OBS Controls] Set Filter error: ${e.message || e.error || e}`, true);
+        }
+    }, {
+        label: "OBS: Set Filter Setting",
+        fields: [
+            {
+                id: "scene",
+                label: "Scene (optional — used to scope source list only)",
+                type: "obs_scene",
+                default: ""
+            },
+            {
+                id: "source",
+                label: "Source / Scene Name",
+                type: "obs_source",
+                default: ""
+            },
+            {
+                id: "filter",
+                label: "Filter Name",
+                type: "obs_filter",
+                default: ""
+            },
+            {
+                id: "settingKey",
+                label: "Setting Key (e.g. opacity, color, brightness)",
+                type: "text",
+                default: ""
+            },
+            {
+                id: "value",
+                label: "Value (number, true/false, or text)",
+                type: "text",
+                default: ""
+            }
+        ]
+    }, MODULE_ID);
+
+    // ─── Command: Set Audio Volume ────────────────────────────────────────────────
+
+    window.TheaterController.registerCommand("obs_set_audio_volume", async (inputs) => {
+        if (!isOBSConnected()) {
+            logMsg("[OBS Controls] Set Audio Volume: OBS not connected.", true);
+            return;
+        }
+
+        const source = (inputs.source || "").trim();
+        if (!source) {
+            logMsg("[OBS Controls] Set Audio Volume: No source name provided.", true);
+            return;
+        }
+
+        const rawVolume = parseFloat(inputs.volume);
+        if (isNaN(rawVolume)) {
+            logMsg("[OBS Controls] Set Audio Volume: Invalid volume value.", true);
+            return;
+        }
+
+        const unit = inputs.unit || "%";
+
+        try {
+            const payload = { inputName: source };
+
+            if (unit === "db") {
+                // dB range: −100 (silence) to 0 (unity). OBS also allows up to +26 dB boost.
+                payload.inputVolumeDb = Math.max(-100, Math.min(26, rawVolume));
+            } else {
+                // % → multiplier: 0–100 maps to 0.0–1.0
+                payload.inputVolumeMul = Math.max(0, rawVolume / 100);
+            }
+
+            await window.obs.call("SetInputVolume", payload);
+
+            const displayVal = unit === "db" ? `${rawVolume} dB` : `${rawVolume}%`;
+            logMsg(`[OBS Controls] Set Audio Volume: '${source}' → ${displayVal}`);
+        } catch (e) {
+            logMsg(`[OBS Controls] Set Audio Volume error: ${e.message || e.error || e}`, true);
+        }
+    }, {
+        label: "OBS: Set Audio Volume",
+        fields: [
+            {
+                id: "source",
+                label: "Audio Source",
+                type: "obs_source",
+                default: ""
+            },
+            {
+                id: "volume",
+                label: "Volume",
+                type: "number",
+                default: 100
+            },
+            {
+                id: "unit",
+                label: "Unit",
+                type: "select",
+                options: [
+                    { value: "%",  label: "% (0 = mute, 100 = full volume)" },
+                    { value: "db", label: "dB (−100 = mute, 0 = unity)" }
+                ],
+                default: "%"
+            }
+        ]
+    }, MODULE_ID);
+
+    // Register Custom Trigger
+    window.TheaterController.registerTrigger("obs_stream_event", 
+        // Matcher function
+        (t, eventData) => {
+            if (t.eventType !== eventData.eventType) return false;
+            if (t.outputState !== eventData.outputState) return false;
+            return true;
+        },
+        // UI Configuration
+        {
+            label: "OBS: Stream / Record State",
+            fields: [
+                { 
+                    id: "eventType", 
+                    label: "Event Type", 
+                    type: "select", 
+                    options: [
+                        { value: "stream", label: "Streaming" },
+                        { value: "record", label: "Recording" }
+                    ],
+                    default: "stream"
+                },
+                { 
+                    id: "outputState", 
+                    label: "State", 
+                    type: "select", 
+                    options: [
+                        { value: "OBS_WEBSOCKET_OUTPUT_STARTING", label: "Starting" },
+                        { value: "OBS_WEBSOCKET_OUTPUT_STARTED", label: "Started (Live)" },
+                        { value: "OBS_WEBSOCKET_OUTPUT_STOPPING", label: "Stopping" },
+                        { value: "OBS_WEBSOCKET_OUTPUT_STOPPED", label: "Stopped" }
+                    ],
+                    default: "OBS_WEBSOCKET_OUTPUT_STARTED"
+                }
+            ]
+        }, 
+        MODULE_ID
+    );
+
+})();

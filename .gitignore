@@ -1,0 +1,11 @@
+/target
+
+# Control Panel rules (.clinerules): never track configuration .json files
+control-panel/**/*.json
+
+# Control Panel rules (.clinerules): never track secrets, proxy scripts or
+# configuration .json files
+*.json
+GoogleAppsScript*.js
+*.env
+.env

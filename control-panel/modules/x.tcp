@@ -1,0 +1,199 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "x_api";
+    let currentConfig = {};
+
+    function safeLog(msg, isError = false) {
+        if (window.logMsg) {
+            window.logMsg(msg, isError);
+        } else {
+            console.log(msg);
+        }
+    }
+
+    const MODULE_DEFINITION = {
+        name: "X (Twitter) API",
+        description: "Enables posting tweets directly in the background using a hidden webview window. No developer keys or API credentials required. <br><button class='btn-green' onclick='window.TheaterController.modules.x_api.definition.openLogin()' style='margin-top: 5px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; border-radius: 4px; border: none;'>🔗 Login to X (Twitter)</button>",
+        configFields: [
+            {
+                id: "load_delay",
+                label: "Compose Load Delay (ms) - Time to wait for X page to load in background",
+                type: "number",
+                default: 5000
+            }
+        ],
+
+        onLoad(moduleConfig) {
+            safeLog("[X API] Headless Webview Module loaded successfully.");
+            currentConfig = moduleConfig;
+        },
+
+        onUnload() {
+            safeLog("[X API] Module unloaded.");
+        },
+
+        openLogin() {
+            if (window.__TAURI__) {
+                safeLog("[X API] Opening visible X (Twitter) login webview...");
+                window.__TAURI__.core.invoke('open_service_login', {
+                    url: "https://x.com/login",
+                    title: "X Login - Theater"
+                }).catch(err => {
+                    safeLog(`[X API Error] Failed to open login window: ${err}`, true);
+                });
+            } else {
+                safeLog("[X API Warning] Not running in Tauri. Opening X login page in browser tab...", true);
+                window.open("https://x.com/login", "_blank");
+            }
+        }
+    };
+
+    function getFieldVal(fieldId) {
+        const el = document.querySelector(`.mod-field-x_api[data-field-id="${fieldId}"]`);
+        return el ? el.value.trim() : (currentConfig[fieldId] || "");
+    }
+
+    async function postTweet(text) {
+        if (!text) {
+            throw new Error("Tweet message is empty.");
+        }
+
+        const delayVal = parseInt(getFieldVal("load_delay")) || 5000;
+
+        if (window.__TAURI__) {
+            safeLog(`[X API] Spawning background hidden webview to tweet: "${text}"`);
+            
+            const jsPayload = `
+            (function() {
+                console.log("[Theater X] Headless script executing...");
+                const txt = ${JSON.stringify(text)};
+                const textarea = document.querySelector('[role="textbox"]') || document.querySelector('[contenteditable="true"]');
+                if (textarea) {
+                    console.log("[Theater X] Textbox found. Focusing...");
+                    textarea.focus();
+                    
+                    // Use ClipboardEvent paste simulation (preferred by Draft.js on X to avoid duplicate insertions)
+                    let pasted = false;
+                    try {
+                        const dataTransfer = new DataTransfer();
+                        dataTransfer.setData('text/plain', txt);
+                        const pasteEvent = new ClipboardEvent('paste', {
+                            clipboardData: dataTransfer,
+                            bubbles: true,
+                            cancelable: true
+                        });
+                        textarea.dispatchEvent(pasteEvent);
+                        pasted = true;
+                        console.log("[Theater X] Dispatched simulated paste event.");
+                    } catch(e) {
+                        console.error("[Theater X] Failed to simulate paste:", e);
+                    }
+                    
+                    // Fallback to execCommand if paste event did not insert text
+                    setTimeout(() => {
+                        if (textarea.textContent.trim() === "") {
+                            console.log("[Theater X] Paste fallback: using execCommand...");
+                            const inserted = document.execCommand('insertText', false, txt);
+                            console.log("[Theater X] execCommand insertText result:", inserted);
+                            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                        }
+                    }, 100);
+                    
+                    setTimeout(() => {
+                        console.log("[Theater X] Finding Post button...");
+                        const btn = document.querySelector('[data-testid="tweetButton"]') || 
+                                    document.querySelector('[data-testid="tweetButtonInline"]') ||
+                                    Array.from(document.querySelectorAll('button')).find(el => el.textContent === 'Post' || el.textContent === 'Tweet');
+                        if (btn) {
+                            console.log("[Theater X] Post button found. Clicking...");
+                            btn.click();
+                        } else {
+                            console.error("[Theater X] Post/Tweet button not found!");
+                        }
+                    }, 500);
+                } else {
+                    console.error("[Theater X] Textbox not found!");
+                }
+            })();
+            `;
+
+            await window.__TAURI__.core.invoke('open_hidden_webview', {
+                url: "https://x.com/compose/post",
+                js: jsPayload,
+                delayMs: delayVal,
+                closeDelayMs: 2000
+            });
+            
+            safeLog("[X API] Headless tweeting task triggered in background.");
+        } else {
+            safeLog("[X API Warning] Not running in Tauri. Copying message to clipboard and opening page in browser tab...", true);
+            
+            if (navigator.clipboard) {
+                await navigator.clipboard.writeText(text);
+                safeLog("[X API] Copied message to clipboard. Please paste and click Post on the opened page.");
+            }
+            window.open("https://x.com/intent/tweet?text=" + encodeURIComponent(text), "_blank");
+        }
+    }
+
+    function replaceTemplateVariables(text, matches, payload) {
+        let result = text || "";
+        if (matches && Array.isArray(matches)) {
+            matches.forEach((val, idx) => {
+                result = result.replace(new RegExp(`\\{${idx + 1}\\}`, 'g'), val || "");
+            });
+        }
+        if (payload) {
+            Object.entries(payload).forEach(([key, val]) => {
+                if (typeof val !== 'object' && val !== null) {
+                    result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), val);
+                }
+            });
+            if (payload.customData && typeof payload.customData === 'object') {
+                Object.entries(payload.customData).forEach(([key, val]) => {
+                    if (typeof val !== 'object' && val !== null) {
+                        result = result.replace(new RegExp(`\\{customData\\.${key}\\}`, 'g'), val);
+                        result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), val);
+                    }
+                });
+            }
+        }
+        return result;
+    }
+
+    // Register Command / Unified Action
+    window.TheaterController.registerCommand("x_command", async (inputs, matches, payload) => {
+        const resolve = (txt) => {
+            if (!txt) return "";
+            return window.TheaterController.replaceVariables ?
+                window.TheaterController.replaceVariables(txt, matches, payload) :
+                replaceTemplateVariables(txt, matches, payload);
+        };
+
+        const resolvedMessage = resolve(inputs.message || "");
+
+        if (!resolvedMessage) {
+            safeLog("[X API Error] Failed to execute: Tweet message content is missing.", true);
+            return;
+        }
+
+        try {
+            await postTweet(resolvedMessage);
+        } catch (err) {
+            safeLog(`[X API Error] Action execution failed: ${err.message || err}`, true);
+        }
+    }, {
+        label: "X (Twitter): Post Message (Background Webview)",
+        fields: [
+            {
+                id: "message",
+                label: "Tweet Content (supports {username}, etc.)",
+                type: "text",
+                default: "Hello from Control Panel! {username}",
+                style: "grid-column: 1 / -1;"
+            }
+        ]
+    }, MODULE_ID);
+
+    window.TheaterController.registerModule(MODULE_ID, MODULE_DEFINITION);
+})();

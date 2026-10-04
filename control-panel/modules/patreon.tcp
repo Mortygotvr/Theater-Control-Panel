@@ -1,0 +1,871 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "patreon_api";
+
+    // Hardcoded Client Credentials and Google Apps Script Proxy URL (replace with yours)
+    const CLIENT_ID = "ukd3366dQp93ZbciK9kI3fDXd0JniEpxxiZsGAMXlmSuMXbrGxhLYF4x65m87eR4";
+    const REDIRECT_URI = "http://localhost:52246/";
+    const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwo87hHrjSQhkoqMZDZKKQiCVfZAutRrQ2t0AiAQmRMMxCfap7jZ7LJHBrLaQpp0vQZ/exec";
+
+    let currentConfig = {};
+    let activeCampaignId = null;
+    let campaignName = "";
+    let tierMap = {};
+    let memberCache = {};
+    let isFirstPoll = true;
+    let pollIntervalId = null;
+    let updateIntervalId = null;
+
+    let stats = {
+        total_patrons: 0,
+        total_pledge_cents: 0,
+        campaign_name: ""
+    };
+
+    let prevTotalPatrons = 0;
+    let prevTotalPledgeCents = 0;
+
+    function safeLog(msg, isError = false) {
+        if (window.logMsg) {
+            window.logMsg(msg, isError);
+        } else {
+            console.log(msg);
+        }
+    }
+
+    const MODULE_DEFINITION = {
+        name: "Patreon API",
+        description: "Polls Patreon API v2 for campaign statistics, new patrons, changes in pledge levels, and cancellations. <br><button class='btn-green' onclick='window.TheaterController.modules.patreon_api.definition.authorizeApp()' style='margin-top: 5px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; display: inline-block; vertical-align: middle; border-radius: 4px; border: none;'>🔗 Connect Patreon Account</button> <button class='btn-green' onclick='window.TheaterController.modules.patreon_api.definition.testPledge()' style='margin-top: 5px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; border-radius: 4px; border: none;'>🧪 Test Pledge</button> <button class='btn-green' onclick='window.TheaterController.modules.patreon_api.definition.testStatsUpdate()' style='margin-top: 5px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; border-radius: 4px; border: none;'>📈 Test Stats Update</button>",
+        configFields: [
+            {
+                id: "campaign_id",
+                label: "Campaign ID (Optional - leave blank to auto-detect first campaign)",
+                type: "text",
+                default: ""
+            },
+            {
+                id: "poll_interval",
+                label: "Polling Interval (seconds, min 30)",
+                type: "number",
+                default: 60
+            }
+        ],
+        variablePresets: [
+            {
+                id: "patreon-event",
+                label: "Patreon: Event Alert",
+                optgroupLabel: "Patreon Presets",
+                samplePayload: {
+                    "username": "John Patreon",
+                    "message": "John Patreon pledged $5.00 (Silver Tier) to Patreon!",
+                    "pledge_amount": "$5.00",
+                    "pledge_cents": 500,
+                    "tier_title": "Silver Tier",
+                    "total_patrons": 10,
+                    "total_pledge_cents": 5000,
+                    "campaign_name": "My Creative Campaign",
+                    "customData": {
+                        "memberId": "member-12345",
+                        "memberName": "John Patreon",
+                        "patronStatus": "active_patron",
+                        "pledgeCents": 500,
+                        "tierTitle": "Silver Tier",
+                        "totalPatrons": 10,
+                        "totalPledgeCents": 5000,
+                        "campaignName": "My Creative Campaign"
+                    }
+                }
+            },
+            {
+                id: "patreon-get-campaign-info",
+                label: "Patreon: Get Campaign Info Details",
+                optgroupLabel: "Get Command Presets",
+                samplePayload: {
+                    "patreon_total_patrons": 10,
+                    "patreon_total_pledge_cents": 5000,
+                    "patreon_total_pledge": "$50.00",
+                    "patreon_campaign_name": "My Creative Campaign",
+                    "patreon_patrons_list": "John Patreon, Jane Patron"
+                }
+            }
+        ],
+
+        onLoad(moduleConfig) {
+            safeLog("[Patreon API] Module loaded successfully.");
+            currentConfig = moduleConfig;
+
+            isFirstPoll = true;
+            memberCache = {};
+            activeCampaignId = null;
+
+            // Auto-exchange if auth_code is present but tokens are not
+            if (currentConfig.auth_code && (!currentConfig.access_token || !currentConfig.refresh_token)) {
+                safeLog("[Patreon] Saved Authorization Code detected without tokens. Initiating automatic exchange...");
+                setTimeout(() => {
+                    MODULE_DEFINITION.exchangeCode();
+                }, 1000);
+            }
+
+            if (currentConfig.access_token) {
+                // Initial check after 1 second
+                setTimeout(async () => {
+                    await updateCampaignStats();
+                    await pollMembers();
+                }, 1000);
+
+                // Polling scheduler
+                const intervalSec = Math.max(30, parseInt(currentConfig.poll_interval) || 60);
+                pollIntervalId = setInterval(async () => {
+                    await updateCampaignStats();
+                    await pollMembers();
+                }, intervalSec * 1000);
+            } else {
+                safeLog("[Patreon API Warning] Patreon is not connected. Polling is disabled.", true);
+            }
+
+            // HUD rendering loop
+            updateIntervalId = setInterval(updatePatreonHUD, 3000);
+        },
+
+        onUnload() {
+            safeLog("[Patreon API] Module unloaded.");
+            if (pollIntervalId) {
+                clearInterval(pollIntervalId);
+                pollIntervalId = null;
+            }
+            if (updateIntervalId) {
+                clearInterval(updateIntervalId);
+                updateIntervalId = null;
+            }
+
+            const hudDiv = document.getElementById('patreon-status-hud');
+            if (hudDiv && hudDiv.parentNode) {
+                hudDiv.parentNode.removeChild(hudDiv);
+            }
+
+            // Clean up Tauri OAuth listener if active
+            if (window.patreonAuthUnlisten) {
+                try { window.patreonAuthUnlisten(); } catch (e) {}
+                window.patreonAuthUnlisten = null;
+            }
+        },
+
+        async testPledge() {
+            const name = prompt("Enter test patron name:", "John Patreon");
+            if (!name) return;
+            const amountCents = parseInt(prompt("Enter pledge amount (cents):", "500")) || 500;
+
+            const eventData = {
+                eventType: "new_pledge",
+                amountCents: amountCents
+            };
+            const tierTitle = amountCents >= 1000 ? "Gold Tier" : "Silver Tier";
+            const formattedAmount = `$${(amountCents / 100).toFixed(2)}`;
+
+            const payload = {
+                username: name,
+                message: `[TEST] ${name} pledged ${formattedAmount} (${tierTitle}) to Patreon!`,
+                pledge_amount: formattedAmount,
+                pledge_cents: amountCents,
+                tier_title: tierTitle,
+                total_patrons: stats.total_patrons + 1,
+                total_pledge_cents: stats.total_pledge_cents + amountCents,
+                campaign_name: campaignName || "Test Campaign",
+                customData: {
+                    memberId: "test-id",
+                    memberName: name,
+                    patronStatus: "active_patron",
+                    pledgeCents: amountCents,
+                    tierTitle: tierTitle,
+                    totalPatrons: stats.total_patrons + 1,
+                    totalPledgeCents: stats.total_pledge_cents + amountCents,
+                    campaignName: campaignName || "Test Campaign"
+                }
+            };
+            safeLog(`[Patreon Test] Simulating New Pledge trigger for "${name}"`);
+            dispatchPatreonTrigger(eventData, payload);
+        },
+
+        async testStatsUpdate() {
+            const newPatrons = parseInt(prompt("Enter test total patrons count:", (stats.total_patrons + 1).toString())) || (stats.total_patrons + 1);
+            const pledgeSumCents = parseInt(prompt("Enter test monthly revenue sum (cents):", (stats.total_pledge_cents + 500).toString())) || (stats.total_pledge_cents + 500);
+
+            const eventData = {
+                eventType: "campaign_update",
+                amountCents: pledgeSumCents
+            };
+            const formattedAmount = `$${(pledgeSumCents / 100).toFixed(2)}`;
+
+            const payload = {
+                username: "Campaign",
+                message: `[TEST] Campaign stats updated to: ${newPatrons} patrons, monthly sum: ${formattedAmount}`,
+                pledge_amount: formattedAmount,
+                pledge_cents: pledgeSumCents,
+                tier_title: "",
+                total_patrons: newPatrons,
+                total_pledge_cents: pledgeSumCents,
+                campaign_name: campaignName || "Test Campaign",
+                customData: {
+                    totalPatrons: newPatrons,
+                    totalPledgeCents: pledgeSumCents,
+                    campaignName: campaignName || "Test Campaign"
+                }
+            };
+            safeLog(`[Patreon Test] Simulating Campaign Stats Update`);
+            dispatchPatreonTrigger(eventData, payload);
+        },
+
+        async authorizeApp() {
+            try {
+                const clientId = CLIENT_ID;
+                const redirectUri = REDIRECT_URI;
+                const state = Math.random().toString(36).substring(2, 15);
+                
+                localStorage.setItem("patreon_oauth_state", state);
+
+                const scopes = [
+                    "identity",
+                    "campaigns",
+                    "campaigns.members"
+                ].join(" ");
+
+                const authUrl = `https://www.patreon.com/oauth2/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&state=${state}`;
+                
+                let isLoopback = false;
+                let loopbackPort = 52246;
+                try {
+                    const u = new URL(redirectUri);
+                    if ((u.hostname === "127.0.0.1" || u.hostname === "localhost") && u.port) {
+                        isLoopback = true;
+                        loopbackPort = parseInt(u.port, 10);
+                    }
+                } catch(e) {}
+
+                if (window.__TAURI__) {
+                    if (window.patreonAuthUnlisten) {
+                        try { window.patreonAuthUnlisten(); } catch (e) {}
+                        window.patreonAuthUnlisten = null;
+                    }
+
+                    if (isLoopback) {
+                        window.__TAURI__.event.listen('patreon-loopback-code', (event) => {
+                            const path = event.payload;
+                            logMsg(`[Patreon] Automatically captured loopback redirect: ${path}`);
+                            try {
+                                const urlObj = new URL("http://localhost" + path);
+                                const code = urlObj.searchParams.get('code');
+                                const stateParam = urlObj.searchParams.get('state');
+                                const savedState = localStorage.getItem("patreon_oauth_state");
+                                
+                                if (savedState && stateParam !== savedState) {
+                                    logMsg(`[Patreon Error] OAuth state mismatch!`, true);
+                                    return;
+                                }
+
+                                if (code) {
+                                    logMsg(`[Patreon] Extracted authorization code: ${code}`);
+                                    currentConfig.auth_code = code;
+                                    
+                                    if (window.patreonAuthUnlisten) {
+                                        window.patreonAuthUnlisten();
+                                        window.patreonAuthUnlisten = null;
+                                    }
+
+                                    logMsg(`[Patreon] Triggering automatic code exchange...`);
+                                    setTimeout(() => {
+                                        MODULE_DEFINITION.exchangeCode(code);
+                                    }, 500);
+                                }
+                            } catch(err) {
+                                logMsg(`[Patreon Error] Failed to parse loopback redirect: ${err.message}`, true);
+                            }
+                        }).then(unlistenFn => {
+                            window.patreonAuthUnlisten = unlistenFn;
+                        });
+
+                        // Start Rust loopback server & open default system browser
+                        window.__TAURI__.core.invoke('start_loopback_listener', {
+                            port: loopbackPort,
+                            eventName: 'patreon-loopback-code'
+                        }).catch(err => {
+                            logMsg(`[Patreon Error] Failed to start loopback listener: ${err}`, true);
+                        });
+
+                        window.__TAURI__.core.invoke('open_in_browser', { url: authUrl }).catch(err => {
+                            logMsg(`[Patreon Error] Failed to open default browser: ${err}`, true);
+                            window.open(authUrl, '_blank');
+                        });
+                    }
+                } else {
+                    window.open(authUrl, '_blank');
+                }
+            } catch (err) {
+                logMsg(`[Patreon Error] Failed to start authorization: ${err.message}`, true);
+                alert(`Failed to start authorization flow: ${err.message}`);
+            }
+        },
+
+        async exchangeCode(code) {
+            const authCode = code || currentConfig.auth_code;
+            if (!authCode) {
+                alert("Please authorize the app first.");
+                return;
+            }
+
+            logMsg("[Patreon] Exchanging authorization code for tokens...");
+
+            try {
+                logMsg(`[Patreon] Routing exchange through Google Apps Script proxy: ${GOOGLE_SCRIPT_URL}`);
+                const response = await fetch(GOOGLE_SCRIPT_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'text/plain'
+                    },
+                    body: JSON.stringify({
+                        action: 'exchange',
+                        code: authCode,
+                        redirect_uri: REDIRECT_URI
+                    })
+                });
+
+                if (!response.ok) {
+                    const errText = await response.text();
+                    logMsg(`[Patreon Error] OAuth exchange failed: ${response.status} ${response.statusText} - ${errText}`, true);
+                    alert(`OAuth exchange failed: ${response.statusText}`);
+                    return;
+                }
+
+                const data = await response.json();
+                if (data.error) {
+                    logMsg(`[Patreon Error] Proxy exchange returned error: ${data.error_description || data.error}`, true);
+                    alert(`OAuth exchange failed: ${data.error_description || data.error}`);
+                    return;
+                }
+
+                if (data.access_token && data.refresh_token) {
+                    // Update configuration
+                    currentConfig.access_token = data.access_token;
+                    currentConfig.refresh_token = data.refresh_token;
+                    currentConfig.token_expires_at = Date.now() + (data.expires_in * 1000);
+
+                    if (window.config) {
+                        if (!window.config.modules) window.config.modules = {};
+                        if (!window.config.modules.patreon_api) window.config.modules.patreon_api = {};
+                        
+                        window.config.modules.patreon_api.auth_code = authCode;
+                        window.config.modules.patreon_api.access_token = data.access_token;
+                        window.config.modules.patreon_api.refresh_token = data.refresh_token;
+                        window.config.modules.patreon_api.token_expires_at = currentConfig.token_expires_at;
+                        if (window.saveConfig) window.saveConfig();
+                    }
+
+                    logMsg("[Patreon] Tokens successfully generated and saved!");
+                    alert("Patreon OAuth setup successful! Your tokens have been generated and saved.");
+                    
+                    // Trigger immediate polling
+                    setTimeout(async () => {
+                        await updateCampaignStats();
+                        await pollMembers();
+                    }, 500);
+                } else {
+                    logMsg("[Patreon Error] OAuth exchange response did not contain tokens.", true);
+                }
+            } catch (err) {
+                logMsg(`[Patreon Error] Network error during OAuth exchange: ${err.message}`, true);
+                alert(`Network error during OAuth exchange: ${err.message}`);
+            }
+        }
+    };
+
+    function getFieldVal(fieldId) {
+        const el = document.querySelector(`.mod-field-patreon_api[data-field-id="${fieldId}"]`);
+        return el ? el.value.trim() : (currentConfig[fieldId] || "").toString().trim();
+    }
+
+    async function getValidToken() {
+        let token = (currentConfig.access_token || "").trim();
+        const expiresAt = currentConfig.token_expires_at || 0;
+        
+        if (!token || Date.now() >= (expiresAt - 60000)) {
+            const refreshed = await refreshAccessToken();
+            if (!refreshed) {
+                logMsg("[Patreon Error] OAuth token refresh failed. Please authorize again.", true);
+                return null;
+            }
+            token = currentConfig.access_token;
+        }
+        return token;
+    }
+
+    async function refreshAccessToken() {
+        const refreshToken = (currentConfig.refresh_token || "").trim();
+        if (!refreshToken) {
+            logMsg("[Patreon Error] Cannot refresh token: Missing Refresh Token.", true);
+            return false;
+        }
+
+        logMsg("[Patreon] Access token expired or missing. Refreshing tokens...");
+
+        try {
+            logMsg(`[Patreon] Routing refresh through Google Apps Script proxy: ${GOOGLE_SCRIPT_URL}`);
+            const response = await fetch(GOOGLE_SCRIPT_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'text/plain'
+                },
+                body: JSON.stringify({
+                    action: 'refresh',
+                    refresh_token: refreshToken
+                })
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Patreon Error] Token refresh failed: ${response.status} ${response.statusText} - ${errText}`, true);
+                return false;
+            }
+
+            const data = await response.json();
+            if (data.error) {
+                logMsg(`[Patreon Error] Proxy refresh returned error: ${data.error_description || data.error}`, true);
+                return false;
+            }
+
+            if (data.access_token) {
+                currentConfig.access_token = data.access_token;
+                currentConfig.refresh_token = data.refresh_token || refreshToken;
+                currentConfig.token_expires_at = Date.now() + (data.expires_in * 1000);
+
+                if (window.config) {
+                    if (!window.config.modules) window.config.modules = {};
+                    if (!window.config.modules.patreon_api) window.config.modules.patreon_api = {};
+                    
+                    window.config.modules.patreon_api.access_token = currentConfig.access_token;
+                    window.config.modules.patreon_api.refresh_token = currentConfig.refresh_token;
+                    window.config.modules.patreon_api.token_expires_at = currentConfig.token_expires_at;
+                    if (window.saveConfig) window.saveConfig();
+                }
+
+                logMsg("[Patreon] Tokens refreshed successfully!");
+                return true;
+            }
+            return false;
+        } catch (err) {
+            logMsg(`[Patreon Error] Network error during token refresh: ${err.message}`, true);
+            return false;
+        }
+    }
+
+    async function patreonRequest(url) {
+        const token = await getValidToken();
+        if (!token) {
+            throw new Error("Patreon connection is not authenticated. Please click '🔗 Connect Patreon Account' in module settings.");
+        }
+
+        const headers = {
+            "Authorization": `Bearer ${token}`,
+            "Content-Type": "application/json"
+        };
+
+        if (window.__TAURI__) {
+            try {
+                const args = [
+                    "-s",
+                    "-X", "GET",
+                    "-H", `Authorization: Bearer ${token}`,
+                    "-H", "Content-Type: application/json",
+                    url,
+                    "-w", "\nHTTP_STATUS_CODE:%{http_code}"
+                ];
+
+                const stdout = await window.__TAURI__.core.invoke("run_external_command", {
+                    program: "curl",
+                    args: args
+                });
+
+                const marker = "\nHTTP_STATUS_CODE:";
+                const idx = stdout.lastIndexOf(marker);
+                if (idx === -1) {
+                    throw new Error(`Invalid response format from curl: ${stdout}`);
+                }
+                const bodyPart = stdout.substring(0, idx);
+                const statusCodeStr = stdout.substring(idx + marker.length).trim();
+                const statusCode = parseInt(statusCodeStr, 10);
+
+                if (statusCode < 200 || statusCode >= 300) {
+                    throw new Error(`HTTP Error ${statusCode}: ${bodyPart}`);
+                }
+
+                try {
+                    return JSON.parse(bodyPart);
+                } catch(e) {
+                    return bodyPart;
+                }
+            } catch (err) {
+                safeLog(`[Patreon API Error] Native curl request failed: ${err.message || err}`, true);
+                throw err;
+            }
+        }
+
+        const fetchOpts = {
+            method: "GET",
+            headers: headers
+        };
+        const res = await fetch(url, fetchOpts);
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`Direct Fetch Error ${res.status} ${res.statusText}: ${text}`);
+        }
+        return await res.json();
+    }
+
+    async function updateCampaignStats() {
+        try {
+            const campaignsUrl = "https://www.patreon.com/api/oauth2/v2/campaigns?include=tiers&fields%5Bcampaign%5D=name,patron_count&fields%5Btier%5D=title,amount_cents";
+            const res = await patreonRequest(campaignsUrl);
+            if (!res || !res.data || res.data.length === 0) {
+                safeLog("[Patreon API Warning] No campaigns found for this Creator Access Token.", true);
+                return;
+            }
+
+            const configuredId = getFieldVal("campaign_id");
+            let selectedCampaign = res.data[0];
+            if (configuredId) {
+                const found = res.data.find(c => c.id === configuredId);
+                if (found) selectedCampaign = found;
+            }
+
+            activeCampaignId = selectedCampaign.id;
+            campaignName = selectedCampaign.attributes.name || selectedCampaign.attributes.creation_name || "Patreon Campaign";
+
+            stats.campaign_name = campaignName;
+            stats.total_patrons = selectedCampaign.attributes.patron_count || 0;
+
+            // Make stats globally accessible
+            window.TheaterController.patreonStats = stats;
+
+            // Cache tiers mappings
+            tierMap = {};
+            if (res.included) {
+                res.included.forEach(item => {
+                    if (item.type === "tier") {
+                        tierMap[item.id] = item.attributes.title || `Tier ${item.id}`;
+                    }
+                });
+            }
+
+            // Dispatch campaign update trigger if stats changed
+            if (!isFirstPoll && (prevTotalPatrons !== stats.total_patrons || prevTotalPledgeCents !== stats.total_pledge_cents)) {
+                const eventData = {
+                    eventType: "campaign_update",
+                    amountCents: stats.total_pledge_cents
+                };
+                const formattedAmount = `$${(stats.total_pledge_cents / 100).toFixed(2)}`;
+                const payload = {
+                    username: "Campaign",
+                    message: `Campaign updated: ${stats.total_patrons} patrons, monthly sum: ${formattedAmount}`,
+                    pledge_amount: formattedAmount,
+                    pledge_cents: stats.total_pledge_cents,
+                    tier_title: "",
+                    total_patrons: stats.total_patrons,
+                    total_pledge_cents: stats.total_pledge_cents,
+                    campaign_name: campaignName,
+                    customData: {
+                        totalPatrons: stats.total_patrons,
+                        totalPledgeCents: stats.total_pledge_cents,
+                        campaignName: campaignName
+                    }
+                };
+                dispatchPatreonTrigger(eventData, payload);
+            }
+
+            prevTotalPatrons = stats.total_patrons;
+            prevTotalPledgeCents = stats.total_pledge_cents;
+
+            updatePatreonHUD();
+        } catch (err) {
+            safeLog(`[Patreon API Error] Failed to update campaign stats: ${err.message || err}`, true);
+        }
+    }
+
+    async function pollMembers() {
+        if (!activeCampaignId) return;
+
+        try {
+            const membersUrl = `https://www.patreon.com/api/oauth2/v2/campaigns/${activeCampaignId}/members?include=currently_entitled_tiers&fields%5Bmember%5D=full_name,patron_status,currently_entitled_amount_cents,lifetime_support_cents&fields%5Btier%5D=title,amount_cents`;
+            const res = await patreonRequest(membersUrl);
+            if (!res || !res.data) return;
+
+            // Map tiers from included items if returned
+            if (res.included) {
+                res.included.forEach(item => {
+                    if (item.type === "tier") {
+                        tierMap[item.id] = item.attributes.title || `Tier ${item.id}`;
+                    }
+                });
+            }
+
+            const currentPollMembers = {};
+            res.data.forEach(m => {
+                const memberId = m.id;
+                const attr = m.attributes || {};
+                const name = attr.full_name || "Anonymous Patron";
+                const status = attr.patron_status || "former_patron";
+                const cents = attr.currently_entitled_amount_cents || 0;
+
+                let tierId = null;
+                if (m.relationships && m.relationships.currently_entitled_tiers && m.relationships.currently_entitled_tiers.data && m.relationships.currently_entitled_tiers.data.length > 0) {
+                    tierId = m.relationships.currently_entitled_tiers.data[0].id;
+                }
+
+                currentPollMembers[memberId] = {
+                    name,
+                    status,
+                    cents,
+                    tierId
+                };
+            });
+
+            // Calculate total pledge cents from active patrons
+            let totalCents = 0;
+            for (const m of Object.values(currentPollMembers)) {
+                if (m.status === "active_patron") {
+                    totalCents += m.cents;
+                }
+            }
+            stats.total_pledge_cents = totalCents;
+
+            if (isFirstPoll) {
+                // Populate member cache on startup without firing triggers
+                memberCache = currentPollMembers;
+                isFirstPoll = false;
+                safeLog(`[Patreon API] Initialized cache with ${Object.keys(memberCache).length} patrons.`);
+                return;
+            }
+
+            // Compare members to detect changes
+            for (const [id, m] of Object.entries(currentPollMembers)) {
+                const prev = memberCache[id];
+                const tierTitle = tierMap[m.tierId] || "No Tier";
+                const formattedAmount = `$${(m.cents / 100).toFixed(2)}`;
+
+                const eventData = {
+                    eventType: "",
+                    amountCents: m.cents
+                };
+
+                const payload = {
+                    username: m.name,
+                    message: "",
+                    pledge_amount: formattedAmount,
+                    pledge_cents: m.cents,
+                    tier_title: tierTitle,
+                    total_patrons: stats.total_patrons,
+                    total_pledge_cents: stats.total_pledge_cents,
+                    campaign_name: campaignName,
+                    customData: {
+                        memberId: id,
+                        memberName: m.name,
+                        patronStatus: m.status,
+                        pledgeCents: m.cents,
+                        tierTitle: tierTitle,
+                        totalPatrons: stats.total_patrons,
+                        totalPledgeCents: stats.total_pledge_cents,
+                        campaignName: campaignName
+                    }
+                };
+
+                if (!prev) {
+                    if (m.status === "active_patron") {
+                        eventData.eventType = "new_pledge";
+                        payload.message = `${m.name} pledged ${formattedAmount} (${tierTitle})!`;
+                        safeLog(`[Patreon API] New Pledge: ${m.name} pledged ${formattedAmount} to "${tierTitle}"`);
+                        dispatchPatreonTrigger(eventData, payload);
+                    }
+                } else {
+                    if (prev.status !== "active_patron" && m.status === "active_patron") {
+                        eventData.eventType = "new_pledge";
+                        payload.message = `${m.name} re-pledged ${formattedAmount} (${tierTitle})!`;
+                        safeLog(`[Patreon API] Returned Patron: ${m.name} pledged ${formattedAmount} to "${tierTitle}"`);
+                        dispatchPatreonTrigger(eventData, payload);
+                    } else if (prev.status === "active_patron" && m.status !== "active_patron") {
+                        eventData.eventType = "pledge_cancelled";
+                        payload.message = `${m.name} cancelled their pledge (status: ${m.status}).`;
+                        safeLog(`[Patreon API] Pledge Cancelled: ${m.name} (status: ${m.status})`);
+                        dispatchPatreonTrigger(eventData, payload);
+                    } else if (m.status === "active_patron" && prev.cents !== m.cents) {
+                        eventData.eventType = "pledge_updated";
+                        payload.message = `${m.name} updated their pledge from $${(prev.cents / 100).toFixed(2)} to ${formattedAmount}!`;
+                        safeLog(`[Patreon API] Pledge Updated: ${m.name} updated from $${(prev.cents / 100).toFixed(2)} to ${formattedAmount}`);
+                        dispatchPatreonTrigger(eventData, payload);
+                    }
+                }
+            }
+
+            // Check for members who disappeared from the list entirely
+            for (const [id, prev] of Object.entries(memberCache)) {
+                if (!currentPollMembers[id] && prev.status === "active_patron") {
+                    const eventData = {
+                        eventType: "pledge_cancelled",
+                        amountCents: 0
+                    };
+                    const payload = {
+                        username: prev.name,
+                        message: `${prev.name} left the Patreon campaign.`,
+                        pledge_amount: "$0.00",
+                        pledge_cents: 0,
+                        tier_title: "None",
+                        total_patrons: stats.total_patrons,
+                        total_pledge_cents: stats.total_pledge_cents,
+                        campaign_name: campaignName,
+                        customData: {
+                            memberId: id,
+                            memberName: prev.name,
+                            patronStatus: "former_patron",
+                            pledgeCents: 0,
+                            tierTitle: "None",
+                            totalPatrons: stats.total_patrons,
+                            totalPledgeCents: stats.total_pledge_cents,
+                            campaignName: campaignName
+                        }
+                    };
+                    safeLog(`[Patreon API] Pledge Cancelled (Removed): ${prev.name}`);
+                    dispatchPatreonTrigger(eventData, payload);
+                }
+            }
+
+            memberCache = currentPollMembers;
+        } catch (err) {
+            safeLog(`[Patreon API Error] Polling members failed: ${err.message || err}`, true);
+        }
+    }
+
+    function dispatchPatreonTrigger(eventData, payload) {
+        if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+            window.TheaterController.dispatchTrigger("patreon_event", eventData, payload);
+        }
+    }
+
+    function updatePatreonHUD() {
+        const container = document.getElementById('loaded-modules-container');
+        if (!container) return;
+
+        const cardHeaders = container.querySelectorAll('.command-row-header strong');
+        let ourCard = null;
+        cardHeaders.forEach(header => {
+            if (header.innerText === "Patreon API") {
+                ourCard = header.closest('.command-row');
+            }
+        });
+
+        if (!ourCard) return;
+
+        let hudDiv = ourCard.querySelector('#patreon-status-hud');
+        if (!hudDiv) {
+            hudDiv = document.createElement('div');
+            hudDiv.id = 'patreon-status-hud';
+            hudDiv.style.marginTop = '15px';
+            hudDiv.style.background = '#111';
+            hudDiv.style.padding = '12px';
+            hudDiv.style.borderRadius = '6px';
+            hudDiv.style.border = '1px solid #333';
+            ourCard.appendChild(hudDiv);
+        }
+
+        const tokenSet = !!currentConfig.access_token;
+        const statusColor = tokenSet ? (activeCampaignId ? "#4caf50" : "#ffeb3b") : "#f44336";
+        const statusText = tokenSet ? (activeCampaignId ? "Connected" : "Authenticating...") : "Not Configured";
+
+        let content = `
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #222; padding-bottom: 8px; margin-bottom: 8px;">
+                <span style="font-size: 0.85em; color: #888; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">Patreon Connection</span>
+                <span style="font-size: 0.85em; color: ${statusColor}; font-weight: bold;">● ${statusText}</span>
+            </div>
+        `;
+
+        if (activeCampaignId) {
+            const formattedTotal = `$${(stats.total_pledge_cents / 100).toFixed(2)}`;
+            content += `
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <div style="font-size: 1.05em; color: #fff; font-weight: bold; word-break: break-all;">${campaignName}</div>
+                    <div style="font-size: 0.8em; color: #888; margin-top: 2px;">Campaign ID: ${activeCampaignId}</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; background: rgba(255,255,255,0.02); padding: 8px; border-radius: 4px; text-align: center; border: 1px solid #222;">
+                        <div>
+                            <div style="font-size: 0.75em; color: #888; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Patrons</div>
+                            <div style="font-size: 1.25em; color: #fff; font-weight: bold; font-family: monospace;">${stats.total_patrons}</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.75em; color: #888; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Monthly Sum</div>
+                            <div style="font-size: 1.25em; color: #38bdf8; font-weight: bold; font-family: monospace;">${formattedTotal}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else if (!tokenSet) {
+            content += `<p style="color: #888; font-size: 0.85em; margin: 0; font-style: italic; text-align: center; padding: 10px 0;">Please click '🔗 Connect Patreon Account' above to authorize.</p>`;
+        } else {
+            content += `<p style="color: #888; font-size: 0.85em; margin: 0; font-style: italic; text-align: center; padding: 10px 0;">Attempting to retrieve campaign data...</p>`;
+        }
+
+        hudDiv.innerHTML = content;
+    }
+
+    // Register Context Provider
+    window.TheaterController.registerContextProvider("patreon_stats_provider", 
+        async () => {
+            const activePatrons = Object.values(memberCache)
+                .filter(m => m.status === "active_patron")
+                .map(m => m.name);
+            return {
+                patreon_total_patrons: stats.total_patrons,
+                patreon_total_pledge_cents: stats.total_pledge_cents,
+                patreon_total_pledge: `$${(stats.total_pledge_cents / 100).toFixed(2)}`,
+                patreon_campaign_name: campaignName,
+                patreon_patrons_list: activePatrons.join(", "),
+                patreon_active_patrons: activePatrons
+            };
+        },
+        {
+            label: "Patreon: Campaign Statistics",
+            samplePayload: {
+                patreon_total_patrons: 10,
+                patreon_total_pledge_cents: 5000,
+                patreon_total_pledge: "$50.00",
+                patreon_campaign_name: "My Creative Campaign",
+                patreon_patrons_list: "John Patreon, Jane Patron",
+                patreon_active_patrons: ["John Patreon", "Jane Patron"]
+            }
+        },
+        MODULE_ID
+    );
+
+    // Register Custom Trigger
+    window.TheaterController.registerTrigger("patreon_event", 
+        (t, eventData) => {
+            if (t.eventType !== eventData.eventType) return false;
+            if (t.minAmountCents && eventData.amountCents < t.minAmountCents) return false;
+            return true;
+        },
+        {
+            label: "Patreon Event",
+            fields: [
+                { 
+                    id: "eventType", 
+                    label: "Event Type", 
+                    type: "select", 
+                    options: [
+                        { value: "new_pledge", label: "New Patron (Pledge Created)" },
+                        { value: "pledge_updated", label: "Patron Pledge Updated" },
+                        { value: "pledge_cancelled", label: "Patron Pledge Cancelled / Member Left" },
+                        { value: "campaign_update", label: "Campaign Stats Updated" }
+                    ],
+                    default: "new_pledge"
+                },
+                { id: "minAmountCents", label: "Minimum Pledge (Cents) Filter (Optional)", type: "number", default: 0 }
+            ]
+        }, 
+        MODULE_ID
+    );
+
+    window.TheaterController.registerModule(MODULE_ID, MODULE_DEFINITION);
+})();

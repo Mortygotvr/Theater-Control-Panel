@@ -1,0 +1,541 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "kick_chat";
+    let currentConfig = {};
+
+    // Polyfill window.saveConfig if it is missing in the control panel
+    if (!window.saveConfig) {
+        window.saveConfig = function() {
+            if (window.config) {
+                localStorage.setItem("obs_bridge_config", JSON.stringify(window.config));
+            }
+        };
+    }
+
+    // Hardcoded Client Credentials and Google Apps Script Proxy URL
+    const CLIENT_ID = "01KSMDKC9KR86WH1TBVNNSDCW4";
+    const REDIRECT_URI = "http://127.0.0.1:52246/";
+    const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw4ptHi8idUT9Ue7ChzK_w7i_SAtEc_ib2vwhUJxnUfbJsuWciX1R7E6PDzOV_inOE6/exec";
+
+    const MODULE_DEFINITION = {
+        name: "Kick Chat",
+        description: "Lightweight module to send automated chat messages to your Kick room using the official Kick API (reuses credentials and handles token refreshing).",
+        configFields: [
+            {
+                id: "broadcaster_id",
+                label: "Your Kick Broadcaster Username (e.g. mortygotvr) <button class='btn-green' onclick='window.TheaterController.modules.kick_chat.definition.authorizeApp()' style='margin-left: 10px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; display: inline-block; vertical-align: middle; border-radius: 4px; border: none;'>🔗 Connect Account</button>",
+                type: "text",
+                default: ""
+            }
+        ],
+        onLoad(moduleConfig) {
+            logMsg("[Kick Chat] Module loaded successfully.");
+            currentConfig = moduleConfig;
+            
+            // Seed hardcoded credentials and proxy settings
+            currentConfig.client_id = CLIENT_ID;
+            currentConfig.redirect_uri = REDIRECT_URI;
+            currentConfig.google_script_url = GOOGLE_SCRIPT_URL;
+
+            // Auto-migrate/share settings from kick_api module if kick_chat is unconfigured
+            if (!currentConfig.broadcaster_id && window.config && window.config.modules && window.config.modules.kick_api) {
+                logMsg("[Kick Chat] Copying configuration from kick_api module...");
+                const shared = window.config.modules.kick_api;
+                for (const key in shared) {
+                    currentConfig[key] = shared[key];
+                }
+                if (!window.config.modules.kick_chat) window.config.modules.kick_chat = {};
+                Object.assign(window.config.modules.kick_chat, shared);
+                if (window.saveConfig) window.saveConfig();
+            }
+
+            // Auto-exchange if auth_code is present but tokens are not
+            if (currentConfig.auth_code && (!currentConfig.access_token || !currentConfig.refresh_token)) {
+                logMsg("[Kick Chat] Saved Authorization Code detected without tokens. Initiating automatic exchange...");
+                setTimeout(() => {
+                    MODULE_DEFINITION.exchangeCode();
+                }, 1000);
+            }
+        },
+        onUnload() {
+            logMsg("[Kick Chat] Module unloaded.");
+            if (window.kickAuthUnlistenChat) {
+                try { window.kickAuthUnlistenChat(); } catch (e) {}
+                window.kickAuthUnlistenChat = null;
+            }
+        },
+
+        // Helper functions exposed on the definition for the UI
+        async authorizeApp() {
+            try {
+                const clientId = CLIENT_ID;
+                const redirectUri = REDIRECT_URI;
+
+                const verifier = generateCodeVerifier();
+                const challenge = await generateCodeChallenge(verifier);
+                const state = Math.random().toString(36).substring(2, 15);
+                
+                localStorage.setItem("kick_pkce_verifier_chat", verifier);
+                localStorage.setItem("kick_pkce_state_chat", state);
+
+                const authUrl = `https://id.kick.com/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=user:read%20channel:read%20channel:write%20chat:read%20chat:write&code_challenge=${challenge}&code_challenge_method=S256&state=${state}`;
+                
+                let isLoopback = false;
+                let loopbackPort = 52246;
+                try {
+                    const u = new URL(redirectUri);
+                    if ((u.hostname === "127.0.0.1" || u.hostname === "localhost") && u.port) {
+                        isLoopback = true;
+                        loopbackPort = parseInt(u.port, 10);
+                    }
+                } catch(e) {}
+
+                if (window.__TAURI__) {
+                    if (window.kickAuthUnlistenChat) {
+                        try { window.kickAuthUnlistenChat(); } catch (e) {}
+                        window.kickAuthUnlistenChat = null;
+                    }
+
+                    if (isLoopback) {
+                        window.__TAURI__.event.listen('kick-loopback-code-chat', (event) => {
+                            const path = event.payload;
+                            logMsg(`[Kick Chat] Automatically captured loopback redirect: ${path}`);
+                            try {
+                                const urlObj = new URL("http://localhost" + path);
+                                const code = urlObj.searchParams.get('code');
+                                if (code) {
+                                    logMsg(`[Kick Chat] Extracted authorization code: ${code}`);
+                                    currentConfig.auth_code = code;
+                                    
+                                    if (window.kickAuthUnlistenChat) {
+                                        window.kickAuthUnlistenChat();
+                                        window.kickAuthUnlistenChat = null;
+                                    }
+
+                                    logMsg(`[Kick Chat] Triggering automatic code exchange...`);
+                                    setTimeout(() => {
+                                        MODULE_DEFINITION.exchangeCode(code);
+                                    }, 500);
+                                }
+                            } catch(err) {
+                                logMsg(`[Kick Chat Error] Failed to parse loopback redirect: ${err.message}`, true);
+                            }
+                        }).then(unlistenFn => {
+                            window.kickAuthUnlistenChat = unlistenFn;
+                        });
+
+                        window.__TAURI__.core.invoke('start_loopback_listener', {
+                            port: loopbackPort,
+                            eventName: 'kick-loopback-code-chat'
+                        }).catch(err => {
+                            logMsg(`[Kick Chat Error] Failed to start loopback listener: ${err}`, true);
+                        });
+
+                        window.__TAURI__.core.invoke('open_in_browser', { url: authUrl }).catch(err => {
+                            logMsg(`[Kick Chat Error] Failed to open default browser: ${err}`, true);
+                            window.open(authUrl, '_blank');
+                        });
+
+                    } else {
+                        window.__TAURI__.event.listen('kick-oauth-code-chat', (event) => {
+                            const redirectUrl = event.payload;
+                            logMsg(`[Kick Chat] Automatically captured webview redirect: ${redirectUrl}`);
+                            try {
+                                const urlObj = new URL(redirectUrl);
+                                const code = urlObj.searchParams.get('code');
+                                if (code) {
+                                    logMsg(`[Kick Chat] Extracted authorization code: ${code}`);
+                                    currentConfig.auth_code = code;
+                                    
+                                    if (window.kickAuthUnlistenChat) {
+                                        window.kickAuthUnlistenChat();
+                                        window.kickAuthUnlistenChat = null;
+                                    }
+
+                                    logMsg(`[Kick Chat] Triggering automatic code exchange...`);
+                                    setTimeout(() => {
+                                        MODULE_DEFINITION.exchangeCode(code);
+                                    }, 500);
+                                }
+                            } catch (err) {
+                                logMsg(`[Kick Chat Error] Failed to parse webview redirect: ${err.message}`, true);
+                            }
+                        }).then(unlistenFn => {
+                            window.kickAuthUnlistenChat = unlistenFn;
+                        });
+
+                        window.__TAURI__.core.invoke('open_oauth_window', {
+                            url: authUrl,
+                            redirectUriPrefix: redirectUri,
+                            eventName: 'kick-oauth-code-chat'
+                        }).catch(err => {
+                            logMsg(`[Kick Chat Error] Failed to open Tauri auth window: ${err}`, true);
+                            window.open(authUrl, '_blank');
+                        });
+                    }
+                } else {
+                    window.open(authUrl, '_blank');
+                }
+            } catch (err) {
+                logMsg(`[Kick Chat Error] Failed to generate PKCE challenge: ${err.message}`, true);
+                alert(`Failed to start authorization flow: ${err.message}`);
+            }
+        },
+
+        async exchangeCode() {
+            const authCode = (currentConfig.auth_code || "").trim();
+            const clientId = CLIENT_ID;
+            const redirectUri = REDIRECT_URI;
+            const googleScriptUrl = GOOGLE_SCRIPT_URL;
+
+            if (!authCode) {
+                alert("Please paste the Authorization Code first.");
+                return;
+            }
+
+            const verifier = localStorage.getItem("kick_pkce_verifier_chat");
+            if (!verifier) {
+                alert("Missing PKCE Code Verifier. Please click '🔗 Connect Account' first.");
+                return;
+            }
+
+            logMsg("[Kick Chat] Exchanging authorization code for tokens...");
+
+            try {
+                let response = await fetch(googleScriptUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'text/plain'
+                    },
+                    body: JSON.stringify({
+                        action: 'exchange',
+                        code: authCode,
+                        redirect_uri: redirectUri,
+                        code_verifier: verifier,
+                        client_id: clientId
+                    })
+                });
+
+                if (!response.ok) {
+                    const errText = await response.text();
+                    logMsg(`[Kick Chat Error] OAuth exchange failed: ${response.status} ${response.statusText} - ${errText}`, true);
+                    alert(`OAuth exchange failed: ${response.statusText}`);
+                    return;
+                }
+
+                const data = await response.json();
+                if (data.error) {
+                    logMsg(`[Kick Chat Error] Proxy exchange returned error: ${data.error_description || data.error}`, true);
+                    alert(`OAuth exchange failed: ${data.error_description || data.error}`);
+                    return;
+                }
+
+                if (data.access_token && data.refresh_token) {
+                    currentConfig.client_id = clientId;
+                    currentConfig.client_secret = "";
+                    currentConfig.redirect_uri = redirectUri;
+                    currentConfig.google_script_url = googleScriptUrl;
+                    currentConfig.access_token = data.access_token;
+                    currentConfig.refresh_token = data.refresh_token;
+                    currentConfig.token_expires_at = Date.now() + (data.expires_in * 1000);
+
+                    if (window.config) {
+                        if (!window.config.modules) window.config.modules = {};
+                        if (!window.config.modules.kick_chat) window.config.modules.kick_chat = {};
+                        
+                        window.config.modules.kick_chat.client_id = clientId;
+                        window.config.modules.kick_chat.client_secret = "";
+                        window.config.modules.kick_chat.redirect_uri = redirectUri;
+                        window.config.modules.kick_chat.google_script_url = googleScriptUrl;
+                        window.config.modules.kick_chat.auth_code = authCode;
+                        window.config.modules.kick_chat.access_token = data.access_token;
+                        window.config.modules.kick_chat.refresh_token = data.refresh_token;
+                        window.config.modules.kick_chat.token_expires_at = currentConfig.token_expires_at;
+                        if (window.saveConfig) window.saveConfig();
+                    }
+
+                    logMsg("[Kick Chat] Tokens successfully generated and saved!");
+                    alert("OAuth setup successful! Your tokens have been generated and saved.");
+                } else {
+                    logMsg("[Kick Chat Error] OAuth exchange response did not contain tokens.", true);
+                }
+            } catch (err) {
+                logMsg(`[Kick Chat Error] Network error during OAuth exchange: ${err.message}`, true);
+                alert(`Network error during OAuth exchange: ${err.message}`);
+            }
+        }
+    };
+
+    async function refreshAccessToken() {
+        const refreshToken = (currentConfig.refresh_token || "").trim();
+        const clientId = CLIENT_ID;
+        const googleScriptUrl = GOOGLE_SCRIPT_URL;
+
+        if (!refreshToken) {
+            logMsg("[Kick Chat Error] Cannot refresh token: Missing Refresh Token.", true);
+            return false;
+        }
+
+        logMsg("[Kick Chat] Access token expired or missing. Refreshing tokens...");
+
+        try {
+            let response = await fetch(googleScriptUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'text/plain'
+                },
+                body: JSON.stringify({
+                    action: 'refresh',
+                    refresh_token: refreshToken,
+                    client_id: clientId
+                })
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Kick Chat Error] Token refresh failed: ${response.status} ${response.statusText} - ${errText}`, true);
+                return false;
+            }
+
+            const data = await response.json();
+            if (data.error) {
+                logMsg(`[Kick Chat Error] Proxy refresh returned error: ${data.error_description || data.error}`, true);
+                return false;
+            }
+
+            if (data.access_token) {
+                currentConfig.access_token = data.access_token;
+                currentConfig.refresh_token = data.refresh_token || refreshToken;
+                currentConfig.token_expires_at = Date.now() + (data.expires_in * 1000);
+
+                if (window.config) {
+                    if (!window.config.modules) window.config.modules = {};
+                    if (!window.config.modules.kick_chat) window.config.modules.kick_chat = {};
+                    
+                    window.config.modules.kick_chat.client_id = clientId;
+                    window.config.modules.kick_chat.client_secret = "";
+                    window.config.modules.kick_chat.google_script_url = googleScriptUrl;
+                    window.config.modules.kick_chat.access_token = currentConfig.access_token;
+                    window.config.modules.kick_chat.refresh_token = currentConfig.refresh_token;
+                    window.config.modules.kick_chat.token_expires_at = currentConfig.token_expires_at;
+                    if (window.saveConfig) window.saveConfig();
+                }
+
+                logMsg("[Kick Chat] Tokens refreshed successfully!");
+                return true;
+            }
+            return false;
+        } catch (err) {
+            logMsg(`[Kick Chat Error] Network error during token refresh: ${err.message} (Make sure your Google Apps Script Web App is deployed with 'Execute as: Me' and 'Who has access: Anyone')`, true);
+            return false;
+        }
+    }
+
+    // PKCE Helper Functions
+    function base64UrlEncode(bytes) {
+        const str = String.fromCharCode(...bytes);
+        const base64 = btoa(str);
+        return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    function generateCodeVerifier() {
+        const array = new Uint8Array(32);
+        window.crypto.getRandomValues(array);
+        return base64UrlEncode(array);
+    }
+
+    async function generateCodeChallenge(verifier) {
+        const encoder = new TextEncoder();
+        const data = encoder.encode(verifier);
+        const digest = await window.crypto.subtle.digest('SHA-256', data);
+        return base64UrlEncode(new Uint8Array(digest));
+    }
+
+    async function resolveChannelId(slug, token) {
+        try {
+            const cleanSlug = (slug || "").trim().toLowerCase();
+            logMsg(`[Kick Chat] Resolving IDs for channel "${cleanSlug}"...`);
+
+            let userId = null;
+            let channelId = null;
+            let chatroomId = null;
+
+            try {
+                const webUrl = `https://kick.com/api/v1/channels/${encodeURIComponent(cleanSlug)}`;
+                const webResponse = await fetch(webUrl, {
+                    method: "GET",
+                    headers: { "Accept": "application/json" }
+                });
+                if (webResponse.ok) {
+                    const webData = await webResponse.json();
+                    userId = webData.user_id;
+                    channelId = webData.id;
+                    if (webData.chatroom) {
+                        chatroomId = webData.chatroom.id;
+                    }
+                    logMsg(`[Kick Chat] Resolved via Web API: User ID = ${userId}, Channel ID = ${channelId}`);
+                }
+            } catch (err) {
+                // Ignore web resolution error, fallback to Dev API if possible
+            }
+
+            if (!userId && token) {
+                const url = `https://api.kick.com/public/v1/channels?slug=${encodeURIComponent(cleanSlug)}`;
+                const response = await fetch(url, {
+                    method: "GET",
+                    headers: {
+                        "Authorization": `Bearer ${token}`,
+                        "Accept": "application/json"
+                    }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.data && data.data.length > 0) {
+                        const channelInfo = data.data[0];
+                        userId = channelInfo.broadcaster_user_id;
+                        if (channelInfo.banner_picture) {
+                            const match = channelInfo.banner_picture.match(/\/images\/channel\/(\d+)\//);
+                            if (match) {
+                                channelId = parseInt(match[1], 10);
+                                chatroomId = channelId;
+                            }
+                        }
+                        logMsg(`[Kick Chat] Resolved via Developer API: User ID = ${userId}`);
+                    }
+                }
+            }
+
+            if (userId) {
+                currentConfig.resolved_broadcaster_id = userId;
+                currentConfig.resolved_channel_id = channelId || userId;
+                currentConfig.resolved_chatroom_id = chatroomId || channelId || userId;
+                currentConfig.resolved_broadcaster_username = slug;
+
+                if (window.config && window.config.modules && window.config.modules.kick_chat) {
+                    window.config.modules.kick_chat.resolved_broadcaster_id = userId;
+                    window.config.modules.kick_chat.resolved_channel_id = channelId || userId;
+                    window.config.modules.kick_chat.resolved_chatroom_id = chatroomId || channelId || userId;
+                    window.config.modules.kick_chat.resolved_broadcaster_username = slug;
+                    if (window.saveConfig) window.saveConfig();
+                }
+                return userId;
+            }
+
+            logMsg(`[Kick Chat Error] Could not resolve IDs for "${slug}"`, true);
+            return null;
+        } catch (e) {
+            logMsg(`[Kick Chat Error] Network error resolving channel ID: ${e.message}`, true);
+            return null;
+        }
+    }
+
+    async function sendKickMessage(msg) {
+        const broadcasterSetting = (currentConfig.broadcaster_id || "").trim();
+        if (!broadcasterSetting) {
+            logMsg("[Kick Chat Error] Message not sent: Broadcaster setting is missing.", true);
+            return;
+        }
+
+        let token = (currentConfig.access_token || "").trim();
+        const expiresAt = currentConfig.token_expires_at || 0;
+        
+        if (!token || Date.now() >= (expiresAt - 60000)) {
+            const refreshed = await refreshAccessToken();
+            if (!refreshed) {
+                logMsg("[Kick Chat Error] Message not sent: OAuth token refresh failed. Please authorize again.", true);
+                return;
+            }
+            token = currentConfig.access_token;
+        }
+
+        let broadcasterUserId = parseInt(broadcasterSetting, 10);
+        if (isNaN(broadcasterUserId)) {
+            if (currentConfig.resolved_broadcaster_id && currentConfig.resolved_broadcaster_username === broadcasterSetting) {
+                broadcasterUserId = currentConfig.resolved_broadcaster_id;
+            } else {
+                logMsg(`[Kick Chat] Resolving channel ID for username "${broadcasterSetting}"...`);
+                const resolved = await resolveChannelId(broadcasterSetting, token);
+                if (!resolved) {
+                    logMsg(`[Kick Chat Error] Message not sent: Could not resolve username "${broadcasterSetting}".`, true);
+                    return;
+                }
+                broadcasterUserId = resolved;
+            }
+        }
+
+        logMsg(`[Kick Chat] Sending message: ${msg}...`);
+
+        try {
+            const response = await fetch("https://api.kick.com/public/v1/chat", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    broadcaster_user_id: broadcasterUserId,
+                    content: msg,
+                    type: "user"
+                })
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Kick Chat Error] Failed to send message: ${response.status} ${response.statusText} - ${errText}`, true);
+            } else {
+                logMsg(`[Kick Chat] Message sent successfully: ${msg}`);
+            }
+        } catch (err) {
+            logMsg(`[Kick Chat Error] Network error sending message: ${err.message}`, true);
+        }
+    }
+
+    function replaceTemplateVariables(text, matches, payload) {
+        let result = text || "";
+        if (matches && Array.isArray(matches)) {
+            matches.forEach((val, idx) => {
+                result = result.replace(new RegExp(`\\{${idx + 1}\\}`, 'g'), val || "");
+            });
+        }
+        if (payload) {
+            Object.entries(payload).forEach(([key, val]) => {
+                if (typeof val !== 'object' && val !== null) {
+                    result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), val);
+                }
+            });
+            if (payload.customData && typeof payload.customData === 'object') {
+                Object.entries(payload.customData).forEach(([key, val]) => {
+                    if (typeof val !== 'object' && val !== null) {
+                        result = result.replace(new RegExp(`\\{customData\\.${key}\\}`, 'g'), val);
+                        result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), val);
+                    }
+                });
+            }
+        }
+        return result;
+    }
+
+    // Register Command
+    window.TheaterController.registerCommand("kick_send_message", async (inputs, matches, payload) => {
+        const textTemplate = inputs.message || "";
+        if (textTemplate) {
+            const resolvedMessage = window.TheaterController.replaceVariables ?
+                window.TheaterController.replaceVariables(textTemplate, matches, payload) :
+                replaceTemplateVariables(textTemplate, matches, payload);
+            sendKickMessage(resolvedMessage);
+        }
+    }, {
+        label: "Kick: Send Chat Message",
+        fields: [
+            {
+                id: "message",
+                label: "Message Text (supports {username}, wildcards {1}, or custom event data)",
+                type: "text",
+                default: "Thanks for the support {username}!",
+                style: "grid-column: 1 / -1;"
+            }
+        ]
+    }, MODULE_ID);
+
+    window.TheaterController.registerModule(MODULE_ID, MODULE_DEFINITION);
+})();

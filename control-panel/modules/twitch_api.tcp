@@ -1,0 +1,3312 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "twitch_api";
+    let currentConfig = {};
+    let triggerObserver = null;
+
+    // Polyfill window.saveConfig if it is missing in the control panel
+    if (!window.saveConfig) {
+        window.saveConfig = function() {
+            if (window.config) {
+                localStorage.setItem("obs_bridge_config", JSON.stringify(window.config));
+            }
+        };
+    }
+
+    // Hardcoded Client Credentials and Google Apps Script Proxy URL
+    const CLIENT_ID = "8di1qtifccgzrs1jvb6t6ddo8z9crv";
+    const REDIRECT_URI = "http://localhost:52246/";
+    const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzQx7bjEcYCwviBjFi5USE3q0-QfHNrcqrj0mJVgR38xVb-ogvL8BIIdthumOw7NaRc8A/exec";
+
+    const MODULE_DEFINITION = {
+        name: "Twitch API",
+        description: "Sends and receives Twitch messages and moderation actions using secure OAuth flow via private Google Apps Script and background token refresh.",
+        configFields: [
+            {
+                id: "broadcaster_id",
+                label: "Your Twitch Broadcaster Username (e.g. mortygotvr) <button class='btn-green' onclick='window.TheaterController.modules.twitch_api.definition.authorizeApp()' style='margin-left: 10px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; display: inline-block; vertical-align: middle; border-radius: 4px; border: none;'>🔗 Connect Account</button>",
+                type: "text",
+                default: ""
+            }
+        ],
+        variablePresets: [
+            {
+                id: "twitch-chat",
+                label: "Twitch: Chat Message",
+                optgroupLabel: "Twitch Presets",
+                samplePayload: {
+                    "username": "chatter_box",
+                    "message": "Hello from Twitch chat! PogChamp",
+                    "customData": {
+                        "username": "chatter_box",
+                        "message": "Hello from Twitch chat! PogChamp",
+                        "subscriber": true,
+                        "mod": false,
+                        "vip": true,
+                        "color": "#ff0000"
+                    }
+                }
+            },
+            {
+                id: "twitch-sub",
+                label: "Twitch: Subscription",
+                optgroupLabel: "Twitch Presets",
+                samplePayload: {
+                    "username": "twitch_subscriber",
+                    "message": "I love the stream!",
+                    "customData": {
+                        "username": "twitch_subscriber",
+                        "message": "I love the stream!",
+                        "months": 12,
+                        "tier": "1000"
+                    }
+                }
+            },
+            {
+                id: "twitch-redeem",
+                label: "Twitch: Channel Points Redeem",
+                optgroupLabel: "Twitch Presets",
+                samplePayload: {
+                    "username": "points_redeemer",
+                    "message": "Play sound effect",
+                    "customData": {
+                        "username": "points_redeemer",
+                        "message": "Play sound effect",
+                        "reward_title": "Play Sound",
+                        "reward_cost": 500,
+                        "reward_id": "uuid-xyz-123"
+                    }
+                }
+            },
+            {
+                id: "twitch-cheer",
+                label: "Twitch: Bits Cheer",
+                optgroupLabel: "Twitch Presets",
+                samplePayload: {
+                    "username": "bit_cheerer",
+                    "message": "Here are 100 bits!",
+                    "customData": {
+                        "username": "bit_cheerer",
+                        "message": "Here are 100 bits!",
+                        "bits": 100
+                    }
+                }
+            },
+            {
+                id: "twitch-power-up",
+                label: "Twitch: Bits Power-up Redeem",
+                optgroupLabel: "Twitch Presets",
+                samplePayload: {
+                    "username": "powerup_redeemer",
+                    "message": "Send a cool effect!",
+                    "customData": {
+                        "username": "powerup_redeemer",
+                        "message": "Send a cool effect!",
+                        "power_up_id": "message_effect",
+                        "power_up_name": "Message Effect",
+                        "bits": 100,
+                        "id": "uuid-xyz-456"
+                    }
+                }
+            },
+            {
+                id: "twitch-get-user-info",
+                label: "Twitch: Get User Info Details",
+                optgroupLabel: "Get Command Presets",
+                samplePayload: {
+                    "twitch_user": {
+                        "data": [
+                            {
+                                "id": "141211776",
+                                "login": "twitchdev",
+                                "display_name": "TwitchDev",
+                                "type": "",
+                                "broadcaster_type": "partner",
+                                "description": "Supporting third-party developers building Twitch integrations.",
+                                "profile_image_url": "https://static-cdn.jtvnw.net/jtv_user_pictures/8a632a5c-f0bc-47e1-8840-77a83d47d4e5-profile_image-300x300.png",
+                                "offline_image_url": "https://static-cdn.jtvnw.net/jtv_user_pictures/3f51ae85-ec4a-464e-a9a3-a7c34f828a2a-channel_offline_image-1920x1080.png",
+                                "view_count": 5917,
+                                "created_at": "2016-12-14T20:32:19Z"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                id: "twitch-get-channel-info",
+                label: "Twitch: Get Channel Info Details",
+                optgroupLabel: "Get Command Presets",
+                samplePayload: {
+                    "twitch_channel": {
+                        "data": [
+                            {
+                                "broadcaster_id": "141211776",
+                                "broadcaster_login": "twitchdev",
+                                "broadcaster_name": "TwitchDev",
+                                "broadcaster_language": "en",
+                                "game_id": "509658",
+                                "game_name": "Just Chatting",
+                                "title": "Talk Show: Let's build Twitch integrations!",
+                                "delay": 0,
+                                "tags": [
+                                    "Developer",
+                                    "Programming",
+                                    "English"
+                                ],
+                                "content_classification_labels": [
+                                    "DrugsIntoxication"
+                                ],
+                                "is_branded_content": false
+                            }
+                        ]
+                    }
+                }
+            }
+        ],
+        onLoad(moduleConfig) {
+            logMsg("[Twitch API] Module loaded successfully.");
+            currentConfig = moduleConfig;
+            
+            // Seed hardcoded credentials and proxy settings
+            currentConfig.client_id = CLIENT_ID;
+            currentConfig.redirect_uri = REDIRECT_URI;
+            currentConfig.google_script_url = GOOGLE_SCRIPT_URL;
+
+            // Auto-migrate settings from old twitch_chat module if twitch_api is unconfigured
+            if (!currentConfig.broadcaster_id && window.config && window.config.modules && window.config.modules.twitch_chat) {
+                logMsg("[Twitch API] Migrating configuration from legacy twitch_chat module...");
+                const legacy = window.config.modules.twitch_chat;
+                currentConfig.broadcaster_id = legacy.username || "";
+                if (!window.config.modules.twitch_api) window.config.modules.twitch_api = {};
+                window.config.modules.twitch_api.broadcaster_id = currentConfig.broadcaster_id;
+                if (window.saveConfig) window.saveConfig();
+            }
+
+            // Automatically migrate legacy triggers & commands
+            migrateOldTriggersAndCommands();
+
+            // Autocomplete Setup
+            injectStyles();
+            document.addEventListener('input', handleInput);
+            document.addEventListener('keydown', handleKeyDown, true);
+            document.addEventListener('click', handleClick);
+
+            // Warning Observer Setup
+            startObservingTriggers();
+
+            // Auto-exchange if auth_code is present but tokens are not
+            if (currentConfig.auth_code && (!currentConfig.access_token || !currentConfig.refresh_token)) {
+                logMsg("[Twitch API] Saved Authorization Code detected without tokens. Initiating exchange...");
+                setTimeout(() => {
+                    MODULE_DEFINITION.exchangeCode();
+                }, 1000);
+            }
+
+            // Connect to Twitch Chatroom WebSocket
+            initChatConnection();
+
+            // Connect to Twitch EventSub WebSocket
+            initEventSubConnection();
+
+            // Fetch custom rewards and power-ups on startup if broadcaster ID is already resolved
+            if (currentConfig.resolved_broadcaster_id) {
+                setTimeout(() => {
+                    fetchTwitchCustomRewards();
+                    fetchTwitchCustomPowerUps();
+                }, 2000);
+            }
+        },
+        onUnload() {
+            logMsg("[Twitch API] Module unloaded.");
+            
+            // Clean up Tauri OAuth listener if active
+            if (window.twitchAuthUnlisten) {
+                try { window.twitchAuthUnlisten(); } catch (e) {}
+                window.twitchAuthUnlisten = null;
+            }
+
+            // Disconnect Twitch chat WebSocket
+            disconnectTwitchChat();
+
+            // Disconnect EventSub WebSocket
+            disconnectEventSub();
+
+            // Autocomplete Cleanup
+            document.removeEventListener('input', handleInput);
+            document.removeEventListener('keydown', handleKeyDown, true);
+            document.removeEventListener('click', handleClick);
+            hideMenu();
+            removeStyles();
+
+            // Warning Observer Cleanup
+            stopObservingTriggers();
+            document.querySelectorAll(".twitch-ban-warning").forEach(el => el.remove());
+        },
+
+        async authorizeApp() {
+            try {
+                const clientId = CLIENT_ID;
+                const redirectUri = REDIRECT_URI;
+                const state = Math.random().toString(36).substring(2, 15);
+                
+                localStorage.setItem("twitch_oauth_state", state);
+
+                const scopes = [
+                    "chat:read",
+                    "chat:edit",
+                    "moderator:manage:banned_users",
+                    "moderator:manage:chat_messages",
+                    "moderator:manage:shoutouts",
+                    "moderator:manage:announcements",
+                    "moderator:manage:chat_settings",
+                    "channel:manage:moderators",
+                    "channel:manage:vips",
+                    "channel:manage:broadcast",
+                    "channel:manage:redemptions",
+                    "channel:read:redemptions",
+                    "bits:read",
+                    "channel:read:hype_train",
+                    "channel:read:polls",
+                    "channel:read:predictions",
+                    "channel:manage:raids",
+                    "channel:edit:commercial",
+                    "channel:manage:guest_star",
+                    "channel:read:guest_star"
+                ].join(" ");
+
+                const authUrl = `https://id.twitch.tv/oauth2/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&state=${state}`;
+                
+                let isLoopback = false;
+                let loopbackPort = 52246;
+                try {
+                    const u = new URL(redirectUri);
+                    if ((u.hostname === "127.0.0.1" || u.hostname === "localhost") && u.port) {
+                        isLoopback = true;
+                        loopbackPort = parseInt(u.port, 10);
+                    }
+                } catch(e) {}
+
+                if (window.__TAURI__) {
+                    if (window.twitchAuthUnlisten) {
+                        try { window.twitchAuthUnlisten(); } catch (e) {}
+                        window.twitchAuthUnlisten = null;
+                    }
+
+                    if (isLoopback) {
+                        window.__TAURI__.event.listen('twitch-loopback-code', (event) => {
+                            const path = event.payload; // e.g. "/?code=xyz&state=abc"
+                            logMsg(`[Twitch API] Automatically captured loopback redirect: ${path}`);
+                            try {
+                                const urlObj = new URL("http://localhost" + path);
+                                const code = urlObj.searchParams.get('code');
+                                if (code) {
+                                    logMsg(`[Twitch API] Extracted authorization code: ${code}`);
+                                    currentConfig.auth_code = code;
+                                    
+                                    if (window.twitchAuthUnlisten) {
+                                        window.twitchAuthUnlisten();
+                                        window.twitchAuthUnlisten = null;
+                                    }
+
+                                    logMsg(`[Twitch API] Triggering automatic code exchange...`);
+                                    setTimeout(() => {
+                                        MODULE_DEFINITION.exchangeCode(code);
+                                    }, 500);
+                                }
+                            } catch(err) {
+                                logMsg(`[Twitch API Error] Failed to parse loopback redirect: ${err.message}`, true);
+                            }
+                        }).then(unlistenFn => {
+                            window.twitchAuthUnlisten = unlistenFn;
+                        });
+
+                        // Start Rust loopback server & open default system browser
+                        window.__TAURI__.core.invoke('start_loopback_listener', {
+                            port: loopbackPort,
+                            eventName: 'twitch-loopback-code'
+                        }).catch(err => {
+                            logMsg(`[Twitch API Error] Failed to start loopback listener: ${err}`, true);
+                        });
+
+                        window.__TAURI__.core.invoke('open_in_browser', { url: authUrl }).catch(err => {
+                            logMsg(`[Twitch API Error] Failed to open default browser: ${err}`, true);
+                            window.open(authUrl, '_blank');
+                        });
+                    }
+                } else {
+                    window.open(authUrl, '_blank');
+                }
+            } catch (err) {
+                logMsg(`[Twitch API Error] Failed to start authorization: ${err.message}`, true);
+                alert(`Failed to start authorization flow: ${err.message}`);
+            }
+        },
+
+        async exchangeCode(code) {
+            const authCode = code || currentConfig.auth_code;
+            if (!authCode) {
+                alert("Please paste the Authorization Code first.");
+                return;
+            }
+
+            logMsg("[Twitch API] Exchanging authorization code for tokens...");
+
+            try {
+                logMsg(`[Twitch API] Routing exchange through Google Apps Script proxy: ${GOOGLE_SCRIPT_URL}`);
+                const response = await fetch(GOOGLE_SCRIPT_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'text/plain'
+                    },
+                    body: JSON.stringify({
+                        action: 'exchange',
+                        code: authCode,
+                        redirect_uri: REDIRECT_URI
+                    })
+                });
+
+                if (!response.ok) {
+                    const errText = await response.text();
+                    logMsg(`[Twitch API Error] OAuth exchange failed: ${response.status} ${response.statusText} - ${errText}`, true);
+                    alert(`OAuth exchange failed: ${response.statusText}`);
+                    return;
+                }
+
+                const data = await response.json();
+                if (data.error) {
+                    logMsg(`[Twitch API Error] Proxy exchange returned error: ${data.error_description || data.error}`, true);
+                    alert(`OAuth exchange failed: ${data.error_description || data.error}`);
+                    return;
+                }
+
+                if (data.access_token && data.refresh_token) {
+                    // Update configuration
+                    currentConfig.access_token = data.access_token;
+                    currentConfig.refresh_token = data.refresh_token;
+                    currentConfig.token_expires_at = Date.now() + (data.expires_in * 1000);
+
+                    // Also capture the broadcaster_id from the UI field if the user typed it
+                    // (prevents it from being wiped when saveConfig() runs before it's persisted)
+                    const broadcasterField = document.querySelector('.mod-field-twitch_api[data-field-id="broadcaster_id"]');
+                    if (broadcasterField && broadcasterField.value.trim()) {
+                        currentConfig.broadcaster_id = broadcasterField.value.trim();
+                    }
+
+                    if (window.config) {
+                        if (!window.config.modules) window.config.modules = {};
+                        if (!window.config.modules.twitch_api) window.config.modules.twitch_api = {};
+                        
+                        window.config.modules.twitch_api.auth_code = authCode;
+                        window.config.modules.twitch_api.access_token = data.access_token;
+                        window.config.modules.twitch_api.refresh_token = data.refresh_token;
+                        window.config.modules.twitch_api.token_expires_at = currentConfig.token_expires_at;
+                        // Persist broadcaster_id so it survives config save
+                        if (currentConfig.broadcaster_id) {
+                            window.config.modules.twitch_api.broadcaster_id = currentConfig.broadcaster_id;
+                        }
+                        if (window.saveConfig) window.saveConfig();
+                    }
+
+                    logMsg("[Twitch API] Tokens successfully generated and saved! Setup is complete.");
+                    alert("OAuth setup successful! Your tokens have been generated and saved.");
+
+                    // Resolve broadcaster ID via Helix API
+                    // Note: resolveBroadcasterId() internally handles initEventSubConnection()
+                    // and fetchTwitchCustomRewards/PowerUps after resolution.
+                    await resolveBroadcasterId();
+
+                    // Connect to Twitch chat (EventSub is handled inside resolveBroadcasterId)
+                    initChatConnection();
+                } else {
+                    logMsg("[Twitch API Error] OAuth exchange response did not contain tokens.", true);
+                }
+            } catch (err) {
+                logMsg(`[Twitch API Error] Network error during OAuth exchange: ${err.message}`, true);
+                alert(`Network error during OAuth exchange: ${err.message}`);
+            }
+        }
+    };
+
+    // ─── Token Verification & Refresh Helper ──────────────────────────────────
+    async function getValidToken() {
+        let token = (currentConfig.access_token || "").trim();
+        const expiresAt = currentConfig.token_expires_at || 0;
+        
+        if (!token || Date.now() >= (expiresAt - 60000)) {
+            const refreshed = await refreshAccessToken();
+            if (!refreshed) {
+                logMsg("[Twitch API Error] OAuth token refresh failed. Please authorize again.", true);
+                return null;
+            }
+            token = currentConfig.access_token;
+        }
+        return token;
+    }
+
+    async function refreshAccessToken() {
+        const refreshToken = (currentConfig.refresh_token || "").trim();
+        if (!refreshToken) {
+            logMsg("[Twitch API Error] Cannot refresh token: Missing Refresh Token.", true);
+            return false;
+        }
+
+        logMsg("[Twitch API] Access token expired or missing. Refreshing tokens...");
+
+        try {
+            logMsg(`[Twitch API] Routing refresh through Google Apps Script proxy: ${GOOGLE_SCRIPT_URL}`);
+            const response = await fetch(GOOGLE_SCRIPT_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'text/plain'
+                },
+                body: JSON.stringify({
+                    action: 'refresh',
+                    refresh_token: refreshToken
+                })
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Token refresh failed: ${response.status} ${response.statusText} - ${errText}`, true);
+                return false;
+            }
+
+            const data = await response.json();
+            if (data.error) {
+                logMsg(`[Twitch API Error] Proxy refresh returned error: ${data.error_description || data.error}`, true);
+                return false;
+            }
+
+            if (data.access_token) {
+                currentConfig.access_token = data.access_token;
+                currentConfig.refresh_token = data.refresh_token || refreshToken;
+                currentConfig.token_expires_at = Date.now() + (data.expires_in * 1000);
+
+                if (window.config) {
+                    if (!window.config.modules) window.config.modules = {};
+                    if (!window.config.modules.twitch_api) window.config.modules.twitch_api = {};
+                    
+                    window.config.modules.twitch_api.access_token = currentConfig.access_token;
+                    window.config.modules.twitch_api.refresh_token = currentConfig.refresh_token;
+                    window.config.modules.twitch_api.token_expires_at = currentConfig.token_expires_at;
+                    if (window.saveConfig) window.saveConfig();
+                }
+
+                logMsg("[Twitch API] Tokens refreshed successfully!");
+                return true;
+            }
+            return false;
+        } catch (err) {
+            logMsg(`[Twitch API Error] Network error during token refresh: ${err.message}`, true);
+            return false;
+        }
+    }
+
+    // ─── Twitch EventSub WebSocket Client ──────────────────────────────────────
+    let eventSubWS = null;
+    let eventSubSessionId = null;
+    let eventSubReconnectTimer = null;
+
+    async function initEventSubConnection() {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) {
+            logMsg("[Twitch API] EventSub: Broadcaster ID not resolved yet. Postponing connection.");
+            return;
+        }
+
+        let token = await getValidToken();
+        if (!token) {
+            logMsg("[Twitch API Error] Could not connect to EventSub: Missing OAuth access token.", true);
+            return;
+        }
+
+        connectEventSub(token, broadcasterId);
+    }
+
+    function connectEventSub(token, broadcasterId) {
+        disconnectEventSub();
+
+        logMsg("[Twitch API] Connecting to Twitch EventSub WebSocket...");
+
+        try {
+            eventSubWS = new WebSocket("wss://eventsub.wss.twitch.tv/ws");
+        } catch (e) {
+            logMsg(`[Twitch API Error] Failed to create EventSub WebSocket: ${e.message}`, true);
+            scheduleEventSubReconnect();
+            return;
+        }
+
+        eventSubWS.onopen = () => {
+            logMsg("[Twitch API] Connected to Twitch EventSub WebSocket. Waiting for session parameters...");
+        };
+
+        eventSubWS.onmessage = async (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                const msgType = msg.metadata ? msg.metadata.message_type : "";
+
+                if (msgType === "session_welcome") {
+                    eventSubSessionId = msg.payload.session.id;
+                    logMsg(`[Twitch API] EventSub Welcome Received! Session ID: ${eventSubSessionId}. Registering subscriptions...`);
+                    
+                    // Create Custom Reward Redemption Subscription
+                    subscribeToEventSub(token, broadcasterId, "channel.channel_points_custom_reward_redemption.add", "1", eventSubSessionId);
+
+                    // Create Bits Use Subscription (for base power-ups and cheers)
+                    subscribeToEventSub(token, broadcasterId, "channel.bits.use", "1", eventSubSessionId);
+
+                    // Create Custom Power-up Redemption Subscription
+                    subscribeToEventSub(token, broadcasterId, "channel.custom_power_up_redemption.add", "1", eventSubSessionId);
+
+                    // Subscribe to Guest Star session begin/end for automatic session ID capture
+                    subscribeToEventSub(token, broadcasterId, "channel.guest_star_session.begin", "beta", eventSubSessionId);
+                    subscribeToEventSub(token, broadcasterId, "channel.guest_star_session.end", "beta", eventSubSessionId);
+
+                    // Subscribe to Guest Star guest updates (invite, accept, go live, etc.)
+                    subscribeToEventSub(token, broadcasterId, "channel.guest_star_guest_update", "beta", eventSubSessionId);
+                } else if (msgType === "notification") {
+                    handleEventSubNotification(msg.payload);
+                } else if (msgType === "session_keepalive") {
+                    // Silent keepalive
+                }
+            } catch (err) {
+                // Ignore parse errors
+            }
+        };
+
+        eventSubWS.onerror = (err) => {
+            logMsg("[Twitch API Error] EventSub WebSocket error occurred.", true);
+        };
+
+        eventSubWS.onclose = () => {
+            eventSubSessionId = null;
+            eventSubWS = null;
+            logMsg("[Twitch API] EventSub WebSocket connection closed.");
+            scheduleEventSubReconnect();
+        };
+    }
+
+    function disconnectEventSub() {
+        clearTimeout(eventSubReconnectTimer);
+        eventSubReconnectTimer = null;
+        if (eventSubWS) {
+            eventSubWS.onopen = null;
+            eventSubWS.onmessage = null;
+            eventSubWS.onerror = null;
+            eventSubWS.onclose = null;
+            if (eventSubWS.readyState === WebSocket.OPEN || eventSubWS.readyState === WebSocket.CONNECTING) {
+                try { eventSubWS.close(); } catch(e) {}
+            }
+            eventSubWS = null;
+        }
+        eventSubSessionId = null;
+    }
+
+    function scheduleEventSubReconnect() {
+        clearTimeout(eventSubReconnectTimer);
+        eventSubReconnectTimer = setTimeout(() => {
+            logMsg("[Twitch API] Reconnecting to EventSub WebSocket...");
+            initEventSubConnection();
+        }, 15000);
+    }
+
+    async function subscribeToEventSub(token, broadcasterId, type, version, sessionId) {
+        logMsg(`[Twitch API] Subscribing to EventSub topic "${type}"...`);
+        try {
+            const response = await fetch("https://api.twitch.tv/helix/eventsub/subscriptions", {
+                method: "POST",
+                headers: {
+                    "Client-Id": CLIENT_ID,
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    type: type,
+                    version: version,
+                    condition: {
+                        broadcaster_user_id: broadcasterId
+                    },
+                    transport: {
+                        method: "websocket",
+                        session_id: sessionId
+                    }
+                })
+            });
+
+            if (response.ok) {
+                logMsg(`[Twitch API] EventSub subscription created successfully for "${type}".`);
+            } else {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] EventSub subscription failed for "${type}": ${response.status} - ${errText}`, true);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error registering EventSub subscription: ${e.message}`, true);
+        }
+    }
+
+    function handleEventSubNotification(payload) {
+        if (!payload || !payload.subscription || !payload.event) return;
+
+        logMsg(`[Twitch EventSub RAW] Notification received for type "${payload.subscription.type}": ` + JSON.stringify(payload.event));
+
+        const subType = payload.subscription.type;
+        const event = payload.event;
+
+        if (subType === "channel.channel_points_custom_reward_redemption.add") {
+            const redeemer = event.user_name || event.user_login || "Anonymous";
+            const userInput = event.user_input || "";
+            const reward = event.reward || {};
+            const rewardId = reward.id || "";
+            const rewardTitle = reward.title || "Custom Reward";
+            const rewardCost = reward.cost || 0;
+
+            logMsg(`[Twitch API] Channel Points Redeemed: ${redeemer} redeemed "${rewardTitle}" (${rewardCost} points). Input: "${userInput}"`);
+
+            const triggerPayload = {
+                username: redeemer,
+                message: userInput,
+                customData: {
+                    username: redeemer,
+                    message: userInput,
+                    reward_id: rewardId,
+                    reward_title: rewardTitle,
+                    reward_cost: rewardCost,
+                    id: event.id || ""
+                },
+                rawEventSub: event
+            };
+
+            if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                window.TheaterController.dispatchTrigger("twitch_event", {
+                    eventType: "reward_redeemed",
+                    username: redeemer,
+                    message: userInput,
+                    reward_id: rewardId,
+                    reward_title: rewardTitle
+                }, triggerPayload);
+            }
+        } else if (subType === "channel.bits.use") {
+            const type = event.type || "";
+            if (type === "power_up") {
+                const redeemer = event.user_name || event.user_login || "Anonymous";
+                const bitsUsed = event.bits || 0;
+                const powerUp = event.power_up || {};
+                const powerUpId = powerUp.type || "";
+                
+                let powerUpName = "Power-up";
+                if (powerUpId === "message_effect") powerUpName = "Message Effect";
+                else if (powerUpId === "gigantify_an_emote") powerUpName = "Gigantify an Emote";
+                else if (powerUpId === "celebration") powerUpName = "On-Screen Celebration";
+                else if (powerUp.name) powerUpName = powerUp.name;
+
+                const message = event.message || "";
+
+                logMsg(`[Twitch API] Bits Power-up Redeemed: ${redeemer} redeemed "${powerUpName}" (${bitsUsed} bits).`);
+
+                const triggerPayload = {
+                    username: redeemer,
+                    message: message,
+                    customData: {
+                        username: redeemer,
+                        message: message,
+                        power_up_id: powerUpId,
+                        power_up_name: powerUpName,
+                        bits: bitsUsed,
+                        id: event.id || ""
+                    },
+                    rawEventSub: event
+                };
+
+                if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                    window.TheaterController.dispatchTrigger("twitch_event", {
+                        eventType: "power_up_redeemed",
+                        username: redeemer,
+                        message: message,
+                        rewardId: powerUpId,
+                        power_up_name: powerUpName
+                    }, triggerPayload);
+                }
+            }
+        } else if (subType === "channel.custom_power_up_redemption.add") {
+            const redeemer = event.user_name || event.user_login || "Anonymous";
+            const message = event.user_input || "";
+            const customPowerUp = event.custom_power_up || {};
+            const powerUpId = event.power_up_id || customPowerUp.id || (event.power_up && event.power_up.id) || "";
+            const powerUpName = event.power_up_name || customPowerUp.title || customPowerUp.name || (event.power_up && event.power_up.name) || "Custom Power-up";
+            const bitsUsed = event.bits_used || event.cost || customPowerUp.bits || customPowerUp.cost || (event.power_up && event.power_up.cost) || 0;
+
+            logMsg(`[Twitch API] Custom Power-up Redeemed: ${redeemer} redeemed "${powerUpName}" (${bitsUsed} bits).`);
+
+            const triggerPayload = {
+                username: redeemer,
+                message: message,
+                customData: {
+                    username: redeemer,
+                    message: message,
+                    power_up_id: powerUpId,
+                    power_up_name: powerUpName,
+                    bits: bitsUsed,
+                    id: event.id || ""
+                },
+                rawEventSub: event
+            };
+
+            if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                window.TheaterController.dispatchTrigger("twitch_event", {
+                    eventType: "power_up_redeemed",
+                    username: redeemer,
+                    message: message,
+                    rewardId: powerUpId,
+                    power_up_name: powerUpName
+                }, triggerPayload);
+            }
+        } else if (subType === "channel.guest_star_session.begin") {
+            const sessionId = event.id || "";
+            if (sessionId) {
+                currentConfig.guest_star_session_id = sessionId;
+                logMsg(`[Twitch API] Guest Star session started. Session ID captured: ${sessionId}`);
+            }
+        } else if (subType === "channel.guest_star_session.end") {
+            logMsg(`[Twitch API] Guest Star session ended. Clearing stored session ID.`);
+            currentConfig.guest_star_session_id = null;
+        } else if (subType === "channel.guest_star_guest_update") {
+            const guest = event.guest || {};
+            const guestUsername = guest.user_name || guest.user_login || "Unknown";
+            const guestState = guest.state || "";
+
+            logMsg(`[Twitch API] Guest Star guest update: "${guestUsername}" state changed to "${guestState}".`);
+
+            const triggerPayload = {
+                username: guestUsername,
+                message: guestState,
+                customData: {
+                    username: guestUsername,
+                    user_id: guest.user_id || "",
+                    state: guestState,
+                    session_id: event.session_id || currentConfig.guest_star_session_id || "",
+                    host_audio_enabled: event.host_audio_enabled,
+                    host_video_enabled: event.host_video_enabled
+                },
+                rawEventSub: event
+            };
+
+            if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                window.TheaterController.dispatchTrigger("twitch_event", {
+                    eventType: "guest_star_guest_update",
+                    username: guestUsername,
+                    message: guestState,
+                    guestState: guestState
+                }, triggerPayload);
+            }
+        }
+    }
+
+    // Expose simulator helper globally
+    window.twitchEventSubSimulate = function(payload) {
+        handleEventSubNotification(payload);
+    };
+
+    // ─── Resolve Broadcaster & User IDs ───────────────────────────────────────
+    async function resolveBroadcasterId() {
+        const username = (currentConfig.broadcaster_id || "").trim().toLowerCase();
+        if (!username) return null;
+        
+        let token = (currentConfig.access_token || "").trim();
+        if (!token) return null;
+        
+        try {
+            logMsg(`[Twitch API] Resolving broadcaster user ID for "${username}"...`);
+            const response = await fetch(`https://api.twitch.tv/helix/users?login=${username}`, {
+                method: 'GET',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data.data && data.data.length > 0) {
+                    const user = data.data[0];
+                    currentConfig.resolved_broadcaster_id = user.id;
+                    currentConfig.resolved_broadcaster_username = username;
+                    
+                    if (window.config && window.config.modules && window.config.modules.twitch_api) {
+                        window.config.modules.twitch_api.resolved_broadcaster_id = user.id;
+                        window.config.modules.twitch_api.resolved_broadcaster_username = username;
+                        if (window.saveConfig) window.saveConfig();
+                    }
+                    logMsg(`[Twitch API] Resolved username "${username}" to ID "${user.id}"`);
+                    
+                    // Trigger EventSub connection once ID is resolved
+                    setTimeout(() => {
+                        initEventSubConnection();
+                    }, 500);
+
+                    // Fetch custom rewards and power-ups once ID is resolved
+                    setTimeout(() => {
+                        fetchTwitchCustomRewards();
+                        fetchTwitchCustomPowerUps();
+                    }, 1000);
+
+                    return user.id;
+                }
+            } else {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to resolve user ID: ${response.status} - ${errText}`, true);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Network error resolving broadcaster ID: ${e.message}`, true);
+        }
+        return null;
+    }
+
+    let customRewardsList = [];
+    let customPowerUpsList = [];
+
+    const BASE_POWER_UPS = [
+        { id: "message_effect", title: "Message Effect", cost: "Varies" },
+        { id: "gigantify_an_emote", title: "Gigantify an Emote", cost: "Varies" },
+        { id: "celebration", title: "On-Screen Celebration", cost: "Varies" }
+    ];
+
+    async function fetchTwitchCustomRewards() {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) {
+            logMsg("[Twitch API] Cannot fetch custom rewards: Broadcaster ID not resolved.");
+            return;
+        }
+
+        let token = await getValidToken();
+        if (!token) {
+            logMsg("[Twitch API] Cannot fetch custom rewards: No valid token.");
+            return;
+        }
+
+        logMsg("[Twitch API] Fetching custom rewards from Twitch Helix API...");
+        try {
+            const url = `https://api.twitch.tv/helix/channel_points/custom_rewards?broadcaster_id=${broadcasterId}&only_manageable_rewards=false`;
+            const response = await fetch(url, {
+                method: "GET",
+                headers: {
+                    "Client-Id": CLIENT_ID,
+                    "Authorization": `Bearer ${token}`
+                }
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                if (result.data) {
+                    customRewardsList = result.data.map(item => ({
+                        id: item.id,
+                        title: item.title,
+                        cost: item.cost,
+                        isEnabled: item.is_enabled
+                    }));
+                    logMsg(`[Twitch API] Fetched ${customRewardsList.length} custom rewards.`);
+                    
+                    // Update the field definition options
+                    updateRewardFieldOptions();
+                    
+                    // Update any existing dropdowns in the DOM
+                    updateRewardDropdownsInDOM();
+                }
+            } else {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to fetch custom rewards: ${response.status} - ${errText}`, true);
+            }
+        } catch (e) {
+            logMsg(`[Twitch API Error] Network error fetching custom rewards: ${e.message}`, true);
+        }
+    }
+
+    async function fetchTwitchCustomPowerUps() {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) {
+            logMsg("[Twitch API] Cannot fetch custom power-ups: Broadcaster ID not resolved.");
+            return;
+        }
+
+        let token = await getValidToken();
+        if (!token) {
+            logMsg("[Twitch API] Cannot fetch custom power-ups: No valid token.");
+            return;
+        }
+
+        logMsg("[Twitch API] Fetching custom power-ups from Twitch Helix API...");
+        try {
+            const url = `https://api.twitch.tv/helix/bits/custom_power_ups?broadcaster_id=${broadcasterId}`;
+            const response = await fetch(url, {
+                method: "GET",
+                headers: {
+                    "Client-Id": CLIENT_ID,
+                    "Authorization": `Bearer ${token}`
+                }
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                if (result.data) {
+                    customPowerUpsList = result.data.map(item => ({
+                        id: item.id,
+                        title: item.title,
+                        cost: item.bits_amount,
+                        isEnabled: item.is_enabled
+                    }));
+                    logMsg(`[Twitch API] Fetched ${customPowerUpsList.length} custom power-ups.`);
+                    
+                    // Update the field definition options
+                    updateRewardFieldOptions();
+                    
+                    // Update any existing dropdowns in the DOM
+                    updateRewardDropdownsInDOM();
+                }
+            } else {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to fetch custom power-ups: ${response.status} - ${errText}`, true);
+            }
+        } catch (e) {
+            logMsg(`[Twitch API Error] Network error fetching custom power-ups: ${e.message}`, true);
+        }
+    }
+
+    function updateRewardFieldOptions() {
+        const trigDef = window.TheaterController.customTriggers["twitch_event"];
+        if (!trigDef || !trigDef.uiConfig || !Array.isArray(trigDef.uiConfig.fields)) return;
+        
+        const rewardField = trigDef.uiConfig.fields.find(f => f.id === "rewardId");
+        if (rewardField) {
+            rewardField.type = "select";
+            
+            const options = [
+                { value: "", label: "Any Reward/Power-up" }
+            ];
+            customRewardsList.forEach(r => {
+                options.push({
+                    value: r.title,
+                    label: `${r.title} (${r.cost} pts)`
+                });
+            });
+            customPowerUpsList.forEach(p => {
+                options.push({
+                    value: p.title,
+                    label: `${p.title} (${p.cost} bits)`
+                });
+            });
+            
+            rewardField.options = options;
+        }
+    }
+
+    function populateRewardDropdown(select, eventType) {
+        const currentValue = select.value;
+        select.innerHTML = "";
+
+        const options = [];
+        if (eventType === "power_up_redeemed") {
+            options.push({ value: "", label: "Any Power-up" });
+            BASE_POWER_UPS.forEach(bp => {
+                options.push({
+                    value: bp.title,
+                    label: `[Base] ${bp.title} (${bp.cost})`
+                });
+            });
+            customPowerUpsList.forEach(cp => {
+                options.push({
+                    value: cp.title,
+                    label: `${cp.title} (${cp.cost} bits)`
+                });
+            });
+        } else {
+            options.push({ value: "", label: "Any Reward" });
+            customRewardsList.forEach(r => {
+                options.push({
+                    value: r.title,
+                    label: `${r.title} (${r.cost} pts)`
+                });
+            });
+        }
+
+        if (currentValue && !options.some(o => o.value === currentValue)) {
+            options.push({
+                value: currentValue,
+                label: currentValue
+            });
+        }
+
+        options.forEach(o => {
+            const opt = document.createElement("option");
+            opt.value = o.value;
+            opt.textContent = o.label;
+            if (o.value === currentValue) {
+                opt.selected = true;
+            }
+            select.appendChild(opt);
+        });
+    }
+
+    function updateRewardDropdownsInDOM() {
+        document.querySelectorAll(".trigger-card").forEach(card => {
+            const eventTypeSelect = card.querySelector('.t-custom-eventType');
+            const select = card.querySelector("select.t-custom-rewardId");
+            if (select && eventTypeSelect) {
+                populateRewardDropdown(select, eventTypeSelect.value);
+            }
+        });
+    }
+
+    async function resolveUserId(username) {
+        const cleanUsername = (username || "").trim().toLowerCase();
+        if (!cleanUsername) return null;
+        let token = await getValidToken();
+        if (!token) return null;
+        
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/users?login=${cleanUsername}`, {
+                method: 'GET',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+            if (response.ok) {
+                const data = await response.json();
+                if (data.data && data.data.length > 0) {
+                    return data.data[0].id;
+                }
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Failed to resolve user ID for "${username}": ${e.message}`, true);
+        }
+        return null;
+    }
+
+    // ─── Twitch IRC WebSocket Client ─────────────────────────────────────────
+    let twitchWS = null;
+    let twitchIsConnected = false;
+    let twitchReconnectTimer = null;
+
+    async function initChatConnection() {
+        const broadcaster = (currentConfig.broadcaster_id || "").trim();
+        if (!broadcaster) {
+            logMsg("[Twitch API] Broadcaster username not configured. Chat connection will not be active.");
+            return;
+        }
+
+        let token = await getValidToken();
+        if (!token) {
+            logMsg("[Twitch API Error] Could not connect to chat: Missing OAuth access token.", true);
+            return;
+        }
+
+        connectTwitchChat(token);
+    }
+
+    function connectTwitchChat(token) {
+        disconnectTwitchChat();
+
+        const username = (currentConfig.broadcaster_id || "").trim().toLowerCase();
+        if (!username || !token) return;
+
+        logMsg(`[Twitch API] Connecting to Twitch Chat for #${username}...`);
+
+        try {
+            twitchWS = new WebSocket("wss://irc-ws.chat.twitch.tv:443");
+        } catch (e) {
+            logMsg(`[Twitch API Error] Failed to create Twitch WebSocket connection: ${e.message}`, true);
+            scheduleTwitchReconnect();
+            return;
+        }
+
+        twitchWS.onopen = () => {
+            logMsg("[Twitch API] Connected to Twitch IRC. Authenticating...");
+            twitchWS.send(`PASS oauth:${token}`);
+            twitchWS.send(`NICK ${username}`);
+            twitchWS.send(`JOIN #${username}`);
+            twitchWS.send("CAP REQ :twitch.tv/membership twitch.tv/tags twitch.tv/commands");
+            twitchIsConnected = true;
+        };
+
+        twitchWS.onmessage = (event) => {
+            const raw = event.data;
+            
+            if (raw.startsWith("PING")) {
+                twitchWS.send("PONG :tmi.twitch.tv");
+                return;
+            }
+
+            const lines = raw.split("\r\n");
+            lines.forEach(line => {
+                if (!line) return;
+
+                if (line.includes("376 ")) { // End of MOTD
+                    logMsg(`[Twitch API] Successfully logged in and joined channel #${username}!`);
+                }
+
+                // Parse Tags & Message
+                let tags = {};
+                let messageBody = line;
+                if (line.startsWith("@")) {
+                    const spaceIdx = line.indexOf(" ");
+                    if (spaceIdx !== -1) {
+                        const tagsStr = line.substring(1, spaceIdx);
+                        messageBody = line.substring(spaceIdx + 1);
+                        tagsStr.split(";").forEach(tag => {
+                            const [key, val] = tag.split("=");
+                            tags[key] = val ? val.replace(/\\s/g, ' ').replace(/\\:/g, ':').replace(/\\r/g, '\r').replace(/\\n/g, '\n') : "";
+                        });
+                    }
+                }
+
+                // PRIVMSG Parser
+                const match = messageBody.match(/^:([^!]+)![^ ]+ PRIVMSG #[^ ]+ :(.+)$/);
+                if (match) {
+                    const sender = tags['display-name'] || match[1];
+                    const message = match[2];
+                    handleTwitchChatMessage(sender, message, tags);
+                    return;
+                }
+
+                // USERNOTICE Parser (Subs, Gifted Subs, Raids)
+                if (messageBody.includes(" USERNOTICE #")) {
+                    const sender = tags['display-name'] || tags['login'] || "Anonymous";
+                    const msgId = tags['msg-id'];
+                    const customMsgMatch = messageBody.match(/USERNOTICE #[^ ]+ :(.+)$/);
+                    const customMessage = customMsgMatch ? customMsgMatch[1] : "";
+                    
+                    if (msgId === "sub" || msgId === "resub") {
+                        const cumulativeMonths = parseInt(tags['msg-param-cumulative-months'] || 1, 10);
+                        logMsg(`[Twitch API] Subscription Event: ${sender} subscribed for ${cumulativeMonths} months! Message: ${customMessage}`);
+                        
+                        const payload = {
+                            username: sender,
+                            message: customMessage,
+                            customData: tags
+                        };
+                        
+                        if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                            window.TheaterController.dispatchTrigger("twitch_event", {
+                                eventType: "subscription",
+                                username: sender,
+                                message: customMessage,
+                                months: cumulativeMonths
+                            }, payload);
+                        }
+                    } else if (msgId === "subgift" || msgId === "anonsubgift") {
+                        const recipient = tags['msg-param-recipient-display-name'] || "someone";
+                        logMsg(`[Twitch API] Gifted Subscription Event: ${sender} gifted a sub to ${recipient}!`);
+                        
+                        const payload = {
+                            username: sender,
+                            message: `Gifted a sub to ${recipient}`,
+                            customData: tags
+                        };
+                        
+                        if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                            window.TheaterController.dispatchTrigger("twitch_event", {
+                                eventType: "gifted_subscription",
+                                username: sender,
+                                giftCount: 1
+                            }, payload);
+                        }
+                    } else if (msgId === "raid") {
+                        const raider = tags['msg-param-displayName'] || sender;
+                        const viewerCount = parseInt(tags['msg-param-viewerCount'] || 0, 10);
+                        logMsg(`[Twitch API] Raid Event: ${raider} raided with ${viewerCount} viewers!`);
+                        
+                        const payload = {
+                            username: raider,
+                            message: `Raided with ${viewerCount} viewers`,
+                            customData: tags
+                        };
+                        
+                        if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                            window.TheaterController.dispatchTrigger("twitch_event", {
+                                eventType: "host",
+                                username: raider,
+                                viewerCount: viewerCount
+                            }, payload);
+                        }
+                    }
+                    return;
+                }
+
+                // CLEARCHAT Parser (Bans, Timeouts, Chat Clears)
+                if (messageBody.includes(" CLEARCHAT #")) {
+                    const targetMatch = messageBody.match(/CLEARCHAT #[^ ]+ :(.+)$/);
+                    if (targetMatch) {
+                        const targetUser = targetMatch[1];
+                        const duration = tags['ban-duration'];
+                        
+                        if (duration) {
+                            const durationSeconds = parseInt(duration, 10);
+                            logMsg(`[Twitch Moderation] User Timed Out: ${targetUser} for ${durationSeconds} seconds.`);
+                            
+                            if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                                window.TheaterController.dispatchTrigger("twitch_event", {
+                                    eventType: "user_timeout",
+                                    username: targetUser,
+                                    duration: durationSeconds
+                                }, { username: targetUser, customData: tags });
+                            }
+                        } else {
+                            logMsg(`[Twitch Moderation] User Banned: ${targetUser} permanently.`);
+                            
+                            if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                                window.TheaterController.dispatchTrigger("twitch_event", {
+                                    eventType: "user_banned",
+                                    username: targetUser
+                                }, { username: targetUser, customData: tags });
+                            }
+                        }
+                    } else {
+                        logMsg(`[Twitch Moderation] Chat cleared by a moderator.`);
+                        
+                        if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                            window.TheaterController.dispatchTrigger("twitch_event", {
+                                eventType: "chat_cleared"
+                            }, { username: "System", customData: tags });
+                        }
+                    }
+                    return;
+                }
+
+                // CLEARMSG Parser (Message Deleted)
+                if (messageBody.includes(" CLEARMSG #")) {
+                    const login = tags['login'];
+                    const targetMsgId = tags['target-msg-id'];
+                    const deletedMsgMatch = messageBody.match(/CLEARMSG #[^ ]+ :(.+)$/);
+                    const deletedMsg = deletedMsgMatch ? deletedMsgMatch[1] : "";
+                    
+                    logMsg(`[Twitch API] Message deleted from ${login} (ID: ${targetMsgId})`);
+                    
+                    if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                        window.TheaterController.dispatchTrigger("twitch_event", {
+                            eventType: "message_deleted",
+                            username: login,
+                            messageId: targetMsgId
+                        }, { username: login, message: deletedMsg, customData: tags });
+                    }
+                }
+            });
+        };
+
+        twitchWS.onerror = (err) => {
+            logMsg("[Twitch API Error] Twitch WebSocket error occurred.", true);
+        };
+
+        twitchWS.onclose = () => {
+            twitchIsConnected = false;
+            logMsg("[Twitch API] Twitch WebSocket connection closed.");
+            scheduleTwitchReconnect();
+        };
+    }
+
+    function disconnectTwitchChat() {
+        clearTimeout(twitchReconnectTimer);
+        twitchReconnectTimer = null;
+        if (twitchWS) {
+            twitchWS.onopen = null;
+            twitchWS.onmessage = null;
+            twitchWS.onerror = null;
+            twitchWS.onclose = null;
+            if (twitchWS.readyState === WebSocket.OPEN || twitchWS.readyState === WebSocket.CONNECTING) {
+                twitchWS.close();
+            }
+            twitchWS = null;
+        }
+        twitchIsConnected = false;
+    }
+
+    function scheduleTwitchReconnect() {
+        clearTimeout(twitchReconnectTimer);
+        twitchReconnectTimer = setTimeout(() => {
+            logMsg("[Twitch API] Reconnecting to Twitch chat...");
+            initChatConnection();
+        }, 10000);
+    }
+
+    function handleTwitchChatMessage(senderName, messageText, tags) {
+        const isSubscriber = tags.subscriber === "1";
+        const isModerator = tags.mod === "1" || (tags.badges && (tags.badges.includes("broadcaster") || tags.badges.includes("moderator")));
+
+        const payload = {
+            username: senderName,
+            message: messageText,
+            customData: {
+                subscriber: isSubscriber,
+                moderator: isModerator,
+                id: tags.id || "",
+                'user-id': tags['user-id'] || "",
+                'room-id': tags['room-id'] || "",
+                'tmi-sent-ts': tags['tmi-sent-ts'] || ""
+            }
+        };
+
+        if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+            window.TheaterController.dispatchTrigger("twitch_event", {
+                eventType: "message",
+                message: messageText,
+                username: senderName,
+                subscriber: isSubscriber,
+                moderator: isModerator
+            }, payload);
+        }
+
+        // Handle Bits Cheer event
+        const bits = tags.bits ? parseInt(tags.bits, 10) : 0;
+        if (bits > 0) {
+            const cheerPayload = {
+                username: senderName,
+                message: messageText,
+                customData: Object.assign({}, payload.customData, {
+                    bits: bits,
+                    username: senderName,
+                    message: messageText
+                })
+            };
+            logMsg(`[Twitch API] Bits Cheer Event: ${senderName} cheered ${bits} bits! Message: ${messageText}`);
+            if (window.TheaterController && window.TheaterController.dispatchTrigger) {
+                window.TheaterController.dispatchTrigger("twitch_event", {
+                    eventType: "cheer",
+                    username: senderName,
+                    message: messageText,
+                    bits: bits
+                }, cheerPayload);
+            }
+        }
+    }
+
+    // ─── Twitch Outbound Chat Sender ──────────────────────────────────────────
+    async function sendTwitchMessage(msg) {
+        const broadcasterSetting = (currentConfig.broadcaster_id || "").trim();
+        if (!broadcasterSetting) {
+            logMsg("[Twitch API Error] Message not sent: Broadcaster setting is missing.", true);
+            return;
+        }
+
+        const trimmed = (msg || "").trim();
+        if (trimmed.startsWith("/")) {
+            // Parse slash command and run via Helix API instead of sending via raw PRIVMSG (which Twitch blocked)
+            const spaceIdx = trimmed.indexOf(" ");
+            const cmd = spaceIdx !== -1 ? trimmed.substring(1, spaceIdx).toLowerCase() : trimmed.substring(1).toLowerCase();
+            const argsStr = spaceIdx !== -1 ? trimmed.substring(spaceIdx + 1).trim() : "";
+            
+            if (cmd === "raid") {
+                if (argsStr) {
+                    startRaidTwitchUser(argsStr);
+                } else {
+                    logMsg("[Twitch API Error] Usage: /raid <channel_name>", true);
+                }
+                return;
+            } else if (cmd === "unraid" || cmd === "cancelraid") {
+                cancelRaidTwitch();
+                return;
+            } else if (cmd === "shoutout") {
+                if (argsStr) {
+                    shoutoutTwitchUser(argsStr);
+                } else {
+                    logMsg("[Twitch API Error] Usage: /shoutout <channel_name>", true);
+                }
+                return;
+            } else if (cmd === "ban") {
+                const parts = argsStr.split(/\s+/);
+                const target = parts[0];
+                const reason = parts.slice(1).join(" ") || "Automated moderation";
+                if (target) {
+                    banTwitchUser(target, 0, reason);
+                } else {
+                    logMsg("[Twitch API Error] Usage: /ban <username> [reason]", true);
+                }
+                return;
+            } else if (cmd === "timeout") {
+                const parts = argsStr.split(/\s+/);
+                const target = parts[0];
+                let duration = 600;
+                let reason = "Automated moderation";
+                if (parts[1] && !isNaN(parts[1])) {
+                    duration = parseInt(parts[1], 10);
+                    reason = parts.slice(2).join(" ") || reason;
+                } else {
+                    reason = parts.slice(1).join(" ") || reason;
+                }
+                if (target) {
+                    banTwitchUser(target, duration, reason);
+                } else {
+                    logMsg("[Twitch API Error] Usage: /timeout <username> [duration_seconds] [reason]", true);
+                }
+                return;
+            } else if (cmd === "unban") {
+                if (argsStr) {
+                    unbanTwitchUser(argsStr);
+                } else {
+                    logMsg("[Twitch API Error] Usage: /unban <username>", true);
+                }
+                return;
+            } else if (cmd === "clear") {
+                clearTwitchChat();
+                return;
+            } else if (cmd === "announce") {
+                if (argsStr) {
+                    sendTwitchAnnouncement(argsStr, "primary");
+                } else {
+                    logMsg("[Twitch API Error] Usage: /announce <message>", true);
+                }
+                return;
+            }
+        }
+
+        let token = await getValidToken();
+        if (!token) return;
+
+        if (!twitchWS || twitchWS.readyState !== WebSocket.OPEN || !twitchIsConnected) {
+            logMsg("[Twitch API] Reconnecting WebSocket to send message...");
+            connectTwitchChat(token);
+        }
+
+        if (twitchWS && twitchWS.readyState === WebSocket.OPEN) {
+            twitchWS.send(`PRIVMSG #${broadcasterSetting.toLowerCase()} :${msg}`);
+            logMsg(`[Twitch API] Sent message to Twitch chat: ${msg}`);
+        } else {
+            logMsg("[Twitch API Error] Message not sent. Twitch IRC client is not connected.", true);
+        }
+    }
+
+    // ─── Twitch Helix API Moderation & Chat Actions ───────────────────────────
+    async function banTwitchUser(targetUsername, durationSeconds, reason) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) {
+            logMsg("[Twitch API Error] Broadcaster ID is not resolved yet.", true);
+            return;
+        }
+        let token = await getValidToken();
+        if (!token) return;
+
+        const targetUserId = await resolveUserId(targetUsername);
+        if (!targetUserId) {
+            logMsg(`[Twitch API Error] Could not resolve target user "${targetUsername}"`, true);
+            return;
+        }
+
+        logMsg(`[Twitch API] Banning/Timing out ${targetUsername} (${targetUserId}) for ${durationSeconds || 'permanent'}...`);
+        try {
+            const payload = {
+                data: {
+                    user_id: targetUserId,
+                    reason: reason || "Automated moderation"
+                }
+            };
+            if (durationSeconds) {
+                payload.data.duration = durationSeconds;
+            }
+
+            const response = await fetch(`https://api.twitch.tv/helix/moderation/bans?broadcaster_id=${broadcasterId}&moderator_id=${broadcasterId}`, {
+                method: 'POST',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to ban/timeout: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Successfully banned/timed out ${targetUsername}.`);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error during ban/timeout: ${e.message}`, true);
+        }
+    }
+
+    async function unbanTwitchUser(targetUsername) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) return;
+        let token = await getValidToken();
+        if (!token) return;
+
+        const targetUserId = await resolveUserId(targetUsername);
+        if (!targetUserId) return;
+
+        logMsg(`[Twitch API] Unbanning ${targetUsername}...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/moderation/bans?broadcaster_id=${broadcasterId}&moderator_id=${broadcasterId}&user_id=${targetUserId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to unban: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Successfully unbanned ${targetUsername}.`);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error during unban: ${e.message}`, true);
+        }
+    }
+
+    async function clearTwitchChat() {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) return;
+        let token = await getValidToken();
+        if (!token) return;
+
+        logMsg(`[Twitch API] Clearing chat...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/moderation/chat?broadcaster_id=${broadcasterId}&moderator_id=${broadcasterId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to clear chat: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Successfully cleared chat.`);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error during clear chat: ${e.message}`, true);
+        }
+    }
+
+    async function startRaidTwitchUser(targetUsername) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) {
+            logMsg("[Twitch API Error] Broadcaster ID is not resolved yet.", true);
+            return;
+        }
+        let token = await getValidToken();
+        if (!token) return;
+
+        const targetUserId = await resolveUserId(targetUsername);
+        if (!targetUserId) {
+            logMsg(`[Twitch API Error] Could not resolve target user "${targetUsername}"`, true);
+            return;
+        }
+
+        logMsg(`[Twitch API] Starting raid to ${targetUsername} (${targetUserId})...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/raids?from_broadcaster_id=${broadcasterId}&to_broadcaster_id=${targetUserId}`, {
+                method: 'POST',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to start raid: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Successfully queued raid to ${targetUsername}!`);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error starting raid: ${e.message}`, true);
+        }
+    }
+
+    async function cancelRaidTwitch() {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) return;
+        let token = await getValidToken();
+        if (!token) return;
+
+        logMsg(`[Twitch API] Cancelling raid...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/raids?from_broadcaster_id=${broadcasterId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to cancel raid: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Successfully cancelled raid.`);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error cancelling raid: ${e.message}`, true);
+        }
+    }
+
+    async function startTwitchCommercial(length) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) {
+            logMsg("[Twitch API Error] Broadcaster ID is not resolved yet.", true);
+            return;
+        }
+        let token = await getValidToken();
+        if (!token) return;
+
+        const duration = parseInt(length, 10) || 30;
+        logMsg(`[Twitch API] Starting a ${duration}-second commercial break...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/channels/commercial`, {
+                method: 'POST',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    broadcaster_id: broadcasterId,
+                    length: duration
+                })
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to start commercial: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Commercial break started successfully.`);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error starting commercial: ${e.message}`, true);
+        }
+    }
+
+    async function createTwitchStreamMarker(description) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) {
+            logMsg("[Twitch API Error] Broadcaster ID is not resolved yet.", true);
+            return;
+        }
+        let token = await getValidToken();
+        if (!token) return;
+
+        logMsg(`[Twitch API] Creating stream marker: "${description}"...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/streams/markers`, {
+                method: 'POST',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    broadcaster_id: broadcasterId,
+                    description: description || ""
+                })
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to create stream marker: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Stream marker created successfully.`);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error creating stream marker: ${e.message}`, true);
+        }
+    }
+
+    async function shoutoutTwitchUser(targetUsername) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) return;
+        let token = await getValidToken();
+        if (!token) return;
+
+        const targetUserId = await resolveUserId(targetUsername);
+        if (!targetUserId) return;
+
+        logMsg(`[Twitch API] Sending shoutout to ${targetUsername}...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/chat/shoutouts?from_broadcaster_id=${broadcasterId}&to_broadcaster_id=${targetUserId}&moderator_id=${broadcasterId}`, {
+                method: 'POST',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to shoutout: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Sent shoutout to ${targetUsername}.`);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error during shoutout: ${e.message}`, true);
+        }
+    }
+
+    async function sendTwitchAnnouncement(message, color) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) return;
+        let token = await getValidToken();
+        if (!token) return;
+
+        logMsg(`[Twitch API] Sending announcement: ${message}...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/chat/announcements?broadcaster_id=${broadcasterId}&moderator_id=${broadcasterId}`, {
+                method: 'POST',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    message: message,
+                    color: color || "primary"
+                })
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to send announcement: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Sent announcement successfully.`);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error sending announcement: ${e.message}`, true);
+        }
+    }
+
+    async function updateTwitchChatSettings(settings) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) return;
+        let token = await getValidToken();
+        if (!token) return;
+
+        logMsg(`[Twitch API] Updating chat settings: ${JSON.stringify(settings)}...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/chat/settings?broadcaster_id=${broadcasterId}&moderator_id=${broadcasterId}`, {
+                method: 'PATCH',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(settings)
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to update chat settings: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Chat settings updated successfully.`);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error updating chat settings: ${e.message}`, true);
+        }
+    }
+
+    async function updateTwitchUserRole(action, role, targetUsername) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) return;
+        let token = await getValidToken();
+        if (!token) return;
+
+        const targetUserId = await resolveUserId(targetUsername);
+        if (!targetUserId) return;
+
+        logMsg(`[Twitch API] ${action === 'add' ? 'Adding' : 'Removing'} ${targetUsername} as ${role}...`);
+        try {
+            let url = '';
+            let method = action === 'add' ? 'POST' : 'DELETE';
+            
+            if (role === 'moderator') {
+                url = `https://api.twitch.tv/helix/moderation/moderators?broadcaster_id=${broadcasterId}&user_id=${targetUserId}`;
+            } else if (role === 'vip') {
+                url = `https://api.twitch.tv/helix/channels/vips?broadcaster_id=${broadcasterId}&user_id=${targetUserId}`;
+            }
+
+            const response = await fetch(url, {
+                method: method,
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to update user role: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Successfully ${action === 'add' ? 'added' : 'removed'} ${targetUsername} as ${role}.`);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error updating user role: ${e.message}`, true);
+        }
+    }
+
+    async function resolveTwitchGameId(gameNameOrId) {
+        if (!gameNameOrId) return "";
+        const trimmed = String(gameNameOrId).trim();
+        // If it looks like a numeric ID already, return it directly
+        if (/^\d+$/.test(trimmed)) {
+            return trimmed;
+        }
+
+        let token = await getValidToken();
+        if (!token) return "";
+
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/games?name=${encodeURIComponent(trimmed)}`, {
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+            if (response.ok) {
+                const data = await response.json();
+                if (data && data.data && data.data.length > 0) {
+                    // Try to find exact match case-insensitive
+                    const match = data.data.find(g => g.name.toLowerCase() === trimmed.toLowerCase()) || data.data[0];
+                    return match.id;
+                }
+            }
+        } catch (e) {
+            logMsg(`[Twitch API Warning] Failed to resolve game name "${trimmed}": ${e.message}`);
+        }
+        return trimmed; // Fallback
+    }
+
+    async function updateTwitchStreamInfo(title, gameNameOrId) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) return;
+
+        let gameId = "";
+        if (gameNameOrId) {
+            gameId = await resolveTwitchGameId(gameNameOrId);
+        }
+
+        let token = await getValidToken();
+        if (!token) return;
+
+        logMsg(`[Twitch API] Updating stream title to "${title}" (gameId: ${gameId || 'none'})...`);
+        try {
+            const payload = {};
+            if (title) payload.title = title;
+            if (gameId) payload.game_id = gameId;
+
+            const response = await fetch(`https://api.twitch.tv/helix/channels?broadcaster_id=${broadcasterId}`, {
+                method: 'PATCH',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to update stream info: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Stream info updated successfully.`);
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error updating stream info: ${e.message}`, true);
+        }
+    }
+
+    // ─── Guest Star: Fetch Active Session ────────────────────────────────────
+    async function fetchGuestStarSession() {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) {
+            logMsg("[Twitch API Error] Broadcaster ID not resolved.", true);
+            return null;
+        }
+        let token = await getValidToken();
+        if (!token) return null;
+
+        logMsg("[Twitch API] Fetching active Guest Star session...");
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/guest_star/session?broadcaster_id=${broadcasterId}&moderator_id=${broadcasterId}`, {
+                method: 'GET',
+                headers: { 'Client-Id': CLIENT_ID, 'Authorization': `Bearer ${token}` }
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to fetch Guest Star session: ${response.status} - ${errText}`, true);
+                return null;
+            }
+
+            const data = await response.json();
+            const session = data.data && data.data[0];
+            if (session && session.id) {
+                currentConfig.guest_star_session_id = session.id;
+                logMsg(`[Twitch API] Active Guest Star session found. Session ID stored: ${session.id} (${session.guests ? session.guests.length : 0} guest(s) in session).`);
+                return session;
+            } else {
+                currentConfig.guest_star_session_id = null;
+                logMsg("[Twitch API] No active Guest Star session found.");
+                return null;
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error fetching Guest Star session: ${e.message}`, true);
+            return null;
+        }
+    }
+
+    // ─── Channel Points Reward Enable/Disable ─────────────────────────────────
+    async function updateCustomReward(rewardNameOrId, enabled) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) {
+            logMsg("[Twitch API Error] Broadcaster ID is not resolved yet.", true);
+            return;
+        }
+        let token = await getValidToken();
+        if (!token) return;
+
+        // Find the reward ID — try matching by title or treat as direct ID
+        let rewardId = rewardNameOrId;
+        const byTitle = customRewardsList.find(r => r.title.toLowerCase() === (rewardNameOrId || "").toLowerCase());
+        if (byTitle) {
+            rewardId = byTitle.id;
+        }
+
+        if (!rewardId) {
+            logMsg(`[Twitch API Error] Could not find reward: "${rewardNameOrId}"`, true);
+            return;
+        }
+
+        logMsg(`[Twitch API] ${enabled ? 'Enabling' : 'Disabling'} custom reward "${rewardNameOrId}" (${rewardId})...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/channel_points/custom_rewards?broadcaster_id=${broadcasterId}&id=${rewardId}`, {
+                method: 'PATCH',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ is_enabled: enabled })
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Failed to update reward: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Reward "${rewardNameOrId}" ${enabled ? 'enabled' : 'disabled'} successfully.`);
+                // Refresh the local list
+                fetchTwitchCustomRewards();
+            }
+        } catch(e) {
+            logMsg(`[Twitch API Error] Error updating reward: ${e.message}`, true);
+        }
+    }
+
+    // ─── Guest Star API Functions ─────────────────────────────────────────────
+    async function sendGuestStarInvite(guestUsername) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) { logMsg("[Twitch API Error] Broadcaster ID not resolved.", true); return; }
+        let token = await getValidToken();
+        if (!token) return;
+
+        const guestId = await resolveUserId(guestUsername);
+        if (!guestId) { logMsg(`[Twitch API Error] Could not resolve guest user "${guestUsername}"`, true); return; }
+
+        logMsg(`[Twitch API] Sending Guest Star invite to "${guestUsername}"...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/guest_star/invites?broadcaster_id=${broadcasterId}&moderator_id=${broadcasterId}&session_id=${currentConfig.guest_star_session_id || ""}&guest_id=${guestId}`, {
+                method: 'POST',
+                headers: { 'Client-Id': CLIENT_ID, 'Authorization': `Bearer ${token}` }
+            });
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Guest Star invite failed: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Guest Star invite sent to "${guestUsername}".`);
+            }
+        } catch(e) { logMsg(`[Twitch API Error] Guest Star invite error: ${e.message}`, true); }
+    }
+
+    async function deleteGuestStarInvite(guestUsername) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) { logMsg("[Twitch API Error] Broadcaster ID not resolved.", true); return; }
+        let token = await getValidToken();
+        if (!token) return;
+
+        const guestId = await resolveUserId(guestUsername);
+        if (!guestId) { logMsg(`[Twitch API Error] Could not resolve guest user "${guestUsername}"`, true); return; }
+
+        logMsg(`[Twitch API] Cancelling Guest Star invite for "${guestUsername}"...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/guest_star/invites?broadcaster_id=${broadcasterId}&moderator_id=${broadcasterId}&session_id=${currentConfig.guest_star_session_id || ""}&guest_id=${guestId}`, {
+                method: 'DELETE',
+                headers: { 'Client-Id': CLIENT_ID, 'Authorization': `Bearer ${token}` }
+            });
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Guest Star invite cancel failed: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Guest Star invite cancelled for "${guestUsername}".`);
+            }
+        } catch(e) { logMsg(`[Twitch API Error] Guest Star invite cancel error: ${e.message}`, true); }
+    }
+
+    async function assignGuestStarSlot(guestUsername, slotId) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) { logMsg("[Twitch API Error] Broadcaster ID not resolved.", true); return; }
+        let token = await getValidToken();
+        if (!token) return;
+
+        const guestId = await resolveUserId(guestUsername);
+        if (!guestId) { logMsg(`[Twitch API Error] Could not resolve guest user "${guestUsername}"`, true); return; }
+
+        logMsg(`[Twitch API] Assigning "${guestUsername}" to Guest Star slot ${slotId}...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/guest_star/slot?broadcaster_id=${broadcasterId}&moderator_id=${broadcasterId}&session_id=${currentConfig.guest_star_session_id || ""}&guest_id=${guestId}&slot_id=${slotId}`, {
+                method: 'POST',
+                headers: { 'Client-Id': CLIENT_ID, 'Authorization': `Bearer ${token}` }
+            });
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Guest Star assign slot failed: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] "${guestUsername}" assigned to slot ${slotId}.`);
+            }
+        } catch(e) { logMsg(`[Twitch API Error] Guest Star assign slot error: ${e.message}`, true); }
+    }
+
+    async function deleteGuestStarSlot(guestUsername, slotId) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) { logMsg("[Twitch API Error] Broadcaster ID not resolved.", true); return; }
+        let token = await getValidToken();
+        if (!token) return;
+
+        const guestId = await resolveUserId(guestUsername);
+        if (!guestId) { logMsg(`[Twitch API Error] Could not resolve guest user "${guestUsername}"`, true); return; }
+
+        logMsg(`[Twitch API] Removing "${guestUsername}" from Guest Star slot ${slotId}...`);
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/guest_star/slot?broadcaster_id=${broadcasterId}&moderator_id=${broadcasterId}&session_id=${currentConfig.guest_star_session_id || ""}&guest_id=${guestId}&slot_id=${slotId}`, {
+                method: 'DELETE',
+                headers: { 'Client-Id': CLIENT_ID, 'Authorization': `Bearer ${token}` }
+            });
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Guest Star delete slot failed: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] "${guestUsername}" removed from slot ${slotId}.`);
+            }
+        } catch(e) { logMsg(`[Twitch API Error] Guest Star delete slot error: ${e.message}`, true); }
+    }
+
+    async function updateGuestStarSlotSettings(slotId, settings) {
+        const broadcasterId = currentConfig.resolved_broadcaster_id;
+        if (!broadcasterId) { logMsg("[Twitch API Error] Broadcaster ID not resolved.", true); return; }
+        let token = await getValidToken();
+        if (!token) return;
+
+        logMsg(`[Twitch API] Updating Guest Star slot ${slotId} settings: ${JSON.stringify(settings)}...`);
+        try {
+            const params = new URLSearchParams({
+                broadcaster_id: broadcasterId,
+                moderator_id: broadcasterId,
+                session_id: currentConfig.guest_star_session_id || "",
+                slot_id: slotId
+            });
+            const response = await fetch(`https://api.twitch.tv/helix/guest_star/slot_settings?${params.toString()}`, {
+                method: 'PATCH',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(settings)
+            });
+            if (!response.ok) {
+                const errText = await response.text();
+                logMsg(`[Twitch API Error] Guest Star update slot settings failed: ${response.status} - ${errText}`, true);
+            } else {
+                logMsg(`[Twitch API] Guest Star slot ${slotId} settings updated.`);
+            }
+        } catch(e) { logMsg(`[Twitch API Error] Guest Star slot settings error: ${e.message}`, true); }
+    }
+
+    function replaceTemplateVariables(text, matches, payload) {
+        let result = text || "";
+        
+        if (matches && Array.isArray(matches)) {
+            matches.forEach((val, idx) => {
+                result = result.replace(new RegExp(`\\{${idx + 1}\\}`, 'g'), val !== undefined ? val : "");
+            });
+        }
+        
+        if (!payload) return result;
+
+        return result.replace(/\{([a-zA-Z0-9_\.\[\]]+)(?:\s*\|\s*([^}]+))?\}/g, (match, path, fallback) => {
+            let val = getNestedValue(payload, path);
+            if (val === undefined && payload.customData) {
+                val = getNestedValue(payload.customData, path);
+            }
+            if (val !== undefined && val !== null && typeof val !== 'object') {
+                return val;
+            }
+            if (fallback !== undefined) {
+                return fallback.trim();
+            }
+            const rootKey = path.split('.')[0].replace(/\[\d+\]/g, '');
+            if (payload[rootKey] !== undefined || (payload.customData && payload.customData[rootKey] !== undefined)) {
+                return "";
+            }
+            return match;
+        });
+    }
+
+    function getNestedValue(obj, path) {
+        if (obj === null || obj === undefined) return undefined;
+        const cleanPath = path.replace(/\[(\d+)\]/g, '.$1');
+        return cleanPath.split('.').reduce((acc, part) => {
+            return (acc && acc[part] !== undefined) ? acc[part] : undefined;
+        }, obj);
+    }
+
+    // Automatically migrate legacy triggers & commands to the new unified event schemas
+    function migrateOldTriggersAndCommands() {
+        if (!window.config || !Array.isArray(window.config.triggers)) return;
+
+        let migratedAny = false;
+
+        window.config.triggers.forEach(t => {
+            // 1. Migrate Triggers
+            if (t.triggerType && t.triggerType.startsWith("twitch_") && t.triggerType !== "twitch_event") {
+                const oldType = t.triggerType;
+                t.triggerType = "twitch_event";
+                migratedAny = true;
+
+                if (oldType === "twitch_chat_message" || oldType === "twitch_message") {
+                    t.eventType = "message";
+                } else if (oldType === "twitch_subscription") {
+                    t.eventType = "subscription";
+                } else if (oldType === "twitch_gifted_subscription") {
+                    t.eventType = "gifted_subscription";
+                } else if (oldType === "twitch_host") {
+                    t.eventType = "host";
+                } else if (oldType === "twitch_user_banned") {
+                    t.eventType = "user_banned";
+                } else if (oldType === "twitch_user_timeout") {
+                    t.eventType = "user_timeout";
+                } else if (oldType === "twitch_message_deleted") {
+                    t.eventType = "message_deleted";
+                } else if (oldType === "twitch_chat_cleared") {
+                    t.eventType = "chat_cleared";
+                }
+                logMsg(`[Twitch API] Migrated legacy trigger type "${oldType}" to "twitch_event" (eventType: "${t.eventType}")`);
+            }
+
+            // 2. Migrate Commands inside Triggers
+            if (Array.isArray(t.commands)) {
+                t.commands.forEach(cmd => {
+                    if (cmd.type && cmd.type.startsWith("twitch_") && cmd.type !== "twitch_command") {
+                        const oldCmdType = cmd.type;
+                        cmd.type = "twitch_command";
+                        migratedAny = true;
+
+                        if (oldCmdType === "twitch_send_message") {
+                            cmd.commandType = "send_message";
+                        } else if (oldCmdType === "twitch_ban_user") {
+                            cmd.commandType = "ban_user";
+                        } else if (oldCmdType === "twitch_timeout_user") {
+                            cmd.commandType = "timeout_user";
+                        } else if (oldCmdType === "twitch_unban_user") {
+                            cmd.commandType = "unban_user";
+                        } else if (oldCmdType === "twitch_clear_chat") {
+                            cmd.commandType = "clear_chat";
+                        } else if (oldCmdType === "twitch_shoutout") {
+                            cmd.commandType = "shoutout";
+                        } else if (oldCmdType === "twitch_announce") {
+                            cmd.commandType = "announce";
+                        } else if (oldCmdType === "twitch_add_moderator") {
+                            cmd.commandType = "add_moderator";
+                        } else if (oldCmdType === "twitch_remove_moderator") {
+                            cmd.commandType = "remove_moderator";
+                        } else if (oldCmdType === "twitch_add_vip") {
+                            cmd.commandType = "add_vip";
+                        } else if (oldCmdType === "twitch_remove_vip") {
+                            cmd.commandType = "remove_vip";
+                        } else if (oldCmdType === "twitch_slow_mode") {
+                            cmd.commandType = "slow_mode";
+                        } else if (oldCmdType === "twitch_follower_only") {
+                            cmd.commandType = "follower_only";
+                        } else if (oldCmdType === "twitch_subscriber_only") {
+                            cmd.commandType = "subscriber_only";
+                        } else if (oldCmdType === "twitch_emote_only") {
+                            cmd.commandType = "emote_only";
+                        } else if (oldCmdType === "twitch_update_stream") {
+                            cmd.commandType = "update_stream";
+                        }
+                        logMsg(`[Twitch API] Migrated legacy command type "${oldCmdType}" to "twitch_command" (commandType: "${cmd.commandType}")`);
+                    }
+                });
+            }
+        });
+
+        // 3. Migrate legacy commands stored in button grid if there is any button deck
+        if (window.config.buttons && typeof window.config.buttons === "object") {
+            Object.values(window.config.buttons).forEach(btn => {
+                if (btn && Array.isArray(btn.commands)) {
+                    btn.commands.forEach(cmd => {
+                        if (cmd.type && cmd.type.startsWith("twitch_") && cmd.type !== "twitch_command") {
+                            const oldCmdType = cmd.type;
+                            cmd.type = "twitch_command";
+                            migratedAny = true;
+
+                            if (oldCmdType === "twitch_send_message") {
+                                cmd.commandType = "send_message";
+                            } else if (oldCmdType === "twitch_ban_user") {
+                                cmd.commandType = "ban_user";
+                            } else if (oldCmdType === "twitch_timeout_user") {
+                                cmd.commandType = "timeout_user";
+                            } else if (oldCmdType === "twitch_unban_user") {
+                                cmd.commandType = "unban_user";
+                            } else if (oldCmdType === "twitch_clear_chat") {
+                                cmd.commandType = "clear_chat";
+                            } else if (oldCmdType === "twitch_shoutout") {
+                                cmd.commandType = "shoutout";
+                            } else if (oldCmdType === "twitch_announce") {
+                                cmd.commandType = "announce";
+                            } else if (oldCmdType === "twitch_add_moderator") {
+                                cmd.commandType = "add_moderator";
+                            } else if (oldCmdType === "twitch_remove_moderator") {
+                                cmd.commandType = "remove_moderator";
+                            } else if (oldCmdType === "twitch_add_vip") {
+                                cmd.commandType = "add_vip";
+                            } else if (oldCmdType === "twitch_remove_vip") {
+                                cmd.commandType = "remove_vip";
+                            } else if (oldCmdType === "twitch_slow_mode") {
+                                cmd.commandType = "slow_mode";
+                            } else if (oldCmdType === "twitch_follower_only") {
+                                cmd.commandType = "follower_only";
+                            } else if (oldCmdType === "twitch_subscriber_only") {
+                                cmd.commandType = "subscriber_only";
+                            } else if (oldCmdType === "twitch_emote_only") {
+                                cmd.commandType = "emote_only";
+                            } else if (oldCmdType === "twitch_update_stream") {
+                                cmd.commandType = "update_stream";
+                            }
+                            logMsg(`[Twitch API] Migrated legacy button command type "${oldCmdType}" to "twitch_command" (commandType: "${cmd.commandType}")`);
+                        }
+                    });
+                }
+            });
+        }
+
+        if (migratedAny) {
+            logMsg("[Twitch API] Saved configuration automatically migrated to unified Twitch Event/Command schema.");
+            if (window.saveConfig) window.saveConfig();
+        }
+    }
+
+    // Register Legacy Outbound Send Message Command
+    window.TheaterController.registerCommand("twitch_send_message", async (inputs, matches, payload) => {
+        const textTemplate = inputs.message || "";
+        if (!textTemplate) return;
+
+        const resolvedMessage = window.TheaterController.replaceVariables ?
+            window.TheaterController.replaceVariables(textTemplate, matches, payload) :
+            replaceTemplateVariables(textTemplate, matches, payload);
+        sendTwitchMessage(resolvedMessage);
+    }, {
+        label: "Twitch: Send Chat Message",
+        fields: [
+            {
+                id: "message",
+                label: "Message Text (supports {username}, wildcards {1}, or custom event data)",
+                type: "text",
+                default: "Thanks for the support {username}!"
+            }
+        ]
+    }, MODULE_ID);
+
+    // Register Unified Outbound Action/Command
+    window.TheaterController.registerCommand("twitch_command", async (inputs, matches, payload) => {
+        const commandType = inputs.commandType || "send_message";
+        const resolve = (txt) => {
+            if (!txt) return "";
+            return window.TheaterController.replaceVariables ?
+                window.TheaterController.replaceVariables(txt, matches, payload) :
+                replaceTemplateVariables(txt, matches, payload);
+        };
+
+        if (commandType === 'send_message') {
+            const textTemplate = inputs.message || "";
+            if (textTemplate) {
+                sendTwitchMessage(resolve(textTemplate));
+            }
+        } else if (commandType === 'ban_user') {
+            const target = resolve(inputs.targetUser);
+            const reason = resolve(inputs.reason);
+            if (target) {
+                banTwitchUser(target, 0, reason);
+            }
+        } else if (commandType === 'timeout_user') {
+            const target = resolve(inputs.targetUser);
+            const duration = inputs.duration !== undefined ? parseInt(inputs.duration, 10) : 600;
+            const reason = resolve(inputs.reason);
+            if (target) {
+                banTwitchUser(target, duration, reason);
+            }
+        } else if (commandType === 'unban_user') {
+            const target = resolve(inputs.targetUser);
+            if (target) {
+                unbanTwitchUser(target);
+            }
+        } else if (commandType === 'clear_chat') {
+            clearTwitchChat();
+        } else if (commandType === 'shoutout') {
+            const target = resolve(inputs.targetUser);
+            if (target) {
+                shoutoutTwitchUser(target);
+            }
+        } else if (commandType === 'announce') {
+            const textTemplate = inputs.message || "";
+            if (textTemplate) {
+                sendTwitchAnnouncement(resolve(textTemplate), "primary");
+            }
+        } else if (commandType === 'add_moderator') {
+            const target = resolve(inputs.targetUser);
+            if (target) {
+                updateTwitchUserRole("add", "moderator", target);
+            }
+        } else if (commandType === 'remove_moderator') {
+            const target = resolve(inputs.targetUser);
+            if (target) {
+                updateTwitchUserRole("remove", "moderator", target);
+            }
+        } else if (commandType === 'add_vip') {
+            const target = resolve(inputs.targetUser);
+            if (target) {
+                updateTwitchUserRole("add", "vip", target);
+            }
+        } else if (commandType === 'remove_vip') {
+            const target = resolve(inputs.targetUser);
+            if (target) {
+                updateTwitchUserRole("remove", "vip", target);
+            }
+        } else if (commandType === 'slow_mode') {
+            const seconds = inputs.seconds !== undefined ? parseInt(inputs.seconds, 10) : 10;
+            updateTwitchChatSettings(seconds > 0 ? { slow_mode: true, slow_mode_wait_time: seconds } : { slow_mode: false });
+        } else if (commandType === 'follower_only') {
+            const minutes = inputs.minutes !== undefined ? parseInt(inputs.minutes, 10) : 10;
+            updateTwitchChatSettings(minutes > 0 ? { follower_mode: true, follower_mode_delay: minutes } : { follower_mode: false });
+        } else if (commandType === 'subscriber_only') {
+            const enabled = inputs.enabled || "on";
+            updateTwitchChatSettings({ subscriber_mode: enabled === "on" });
+        } else if (commandType === 'emote_only') {
+            const enabled = inputs.enabled || "on";
+            updateTwitchChatSettings({ emote_mode: enabled === "on" });
+        } else if (commandType === 'update_stream') {
+            const title = resolve(inputs.title);
+            const gameId = resolve(inputs.gameId);
+            updateTwitchStreamInfo(title, gameId);
+        } else if (commandType === 'raid') {
+            const target = resolve(inputs.targetUser);
+            if (target) {
+                startRaidTwitchUser(target);
+            }
+        } else if (commandType === 'cancel_raid') {
+            cancelRaidTwitch();
+        } else if (commandType === 'commercial') {
+            const duration = inputs.duration !== undefined ? parseInt(inputs.duration, 10) : 30;
+            startTwitchCommercial(duration);
+        } else if (commandType === 'stream_marker') {
+            const desc = resolve(inputs.description);
+            createTwitchStreamMarker(desc);
+        } else if (commandType === 'enable_reward') {
+            const rewardName = resolve(inputs.rewardName);
+            if (rewardName) updateCustomReward(rewardName, true);
+        } else if (commandType === 'disable_reward') {
+            const rewardName = resolve(inputs.rewardName);
+            if (rewardName) updateCustomReward(rewardName, false);
+        } else if (commandType === 'guest_star_invite') {
+            const guest = resolve(inputs.targetUser);
+            if (guest) sendGuestStarInvite(guest);
+        } else if (commandType === 'guest_star_cancel_invite') {
+            const guest = resolve(inputs.targetUser);
+            if (guest) deleteGuestStarInvite(guest);
+        } else if (commandType === 'guest_star_assign_slot') {
+            const guest = resolve(inputs.targetUser);
+            const slot = resolve(inputs.guestStarSlotId) || "1";
+            if (guest) assignGuestStarSlot(guest, slot);
+        } else if (commandType === 'guest_star_remove_slot') {
+            const guest = resolve(inputs.targetUser);
+            const slot = resolve(inputs.guestStarSlotId) || "1";
+            if (guest) deleteGuestStarSlot(guest, slot);
+        } else if (commandType === 'guest_star_slot_settings') {
+            const slot = resolve(inputs.guestStarSlotId) || "1";
+            const settings = {};
+            if (inputs.guestStarMuteAudio !== undefined) settings.is_audio_enabled = inputs.guestStarMuteAudio !== "muted";
+            if (inputs.guestStarMuteVideo !== undefined) settings.is_video_enabled = inputs.guestStarMuteVideo !== "muted";
+            updateGuestStarSlotSettings(slot, settings);
+        }
+    }, {
+        label: "Twitch: Action / Command",
+        fields: [
+            {
+                id: "commandType",
+                label: "Twitch Command Type",
+                type: "select",
+                options: [
+                    { value: "send_message", label: "Send Chat Message" },
+                    { value: "ban_user", label: "Ban User" },
+                    { value: "timeout_user", label: "Timeout User" },
+                    { value: "unban_user", label: "Unban User" },
+                    { value: "clear_chat", label: "Clear Chat" },
+                    { value: "shoutout", label: "Shoutout User" },
+                    { value: "announce", label: "Send Announcement" },
+                    { value: "add_moderator", label: "Add Moderator (/mod)" },
+                    { value: "remove_moderator", label: "Remove Moderator (/unmod)" },
+                    { value: "add_vip", label: "Add VIP (/vip)" },
+                    { value: "remove_vip", label: "Remove VIP (/unvip)" },
+                    { value: "slow_mode", label: "Set Slow Mode" },
+                    { value: "follower_only", label: "Set Follower Only Mode" },
+                    { value: "subscriber_only", label: "Set Subscriber Only Mode" },
+                    { value: "emote_only", label: "Set Emote Only Mode" },
+                    { value: "update_stream", label: "Update Stream Metadata" },
+                    { value: "raid", label: "Raid Channel" },
+                    { value: "cancel_raid", label: "Cancel Raid" },
+                    { value: "commercial", label: "Run Commercial Break" },
+                    { value: "stream_marker", label: "Create Stream Marker" },
+                    { value: "enable_reward", label: "Enable Channel Point Reward" },
+                    { value: "disable_reward", label: "Disable Channel Point Reward" },
+                    { value: "guest_star_invite", label: "Guest Star: Send Invite" },
+                    { value: "guest_star_cancel_invite", label: "Guest Star: Cancel Invite" },
+                    { value: "guest_star_assign_slot", label: "Guest Star: Assign Slot" },
+                    { value: "guest_star_remove_slot", label: "Guest Star: Remove from Slot" },
+                    { value: "guest_star_slot_settings", label: "Guest Star: Update Slot Settings" }
+                ],
+                default: "send_message"
+            },
+            {
+                id: "message",
+                label: "Message Text (supports {username}, wildcards {1}, or custom event data)",
+                type: "text",
+                default: "Thanks for the support {username}!",
+                style: "grid-column: 1 / -1;"
+            },
+            {
+                id: "targetUser",
+                label: "Target Username",
+                type: "text",
+                default: "{username}"
+            },
+            {
+                id: "reason",
+                label: "Reason (optional)",
+                type: "text",
+                default: "Automated moderation"
+            },
+            {
+                id: "duration",
+                label: "Timeout / Commercial Duration (seconds)",
+                type: "number",
+                default: 600
+            },
+            {
+                id: "seconds",
+                label: "Slow duration in seconds (0 to turn off)",
+                type: "number",
+                default: 10
+            },
+            {
+                id: "minutes",
+                label: "Follow duration in minutes (0 to turn off)",
+                type: "number",
+                default: 10
+            },
+            {
+                id: "enabled",
+                label: "Status",
+                type: "select",
+                options: [
+                    { value: "on", label: "Enabled (On)" },
+                    { value: "off", label: "Disabled (Off)" }
+                ],
+                default: "on"
+            },
+            {
+                id: "title",
+                label: "Stream Title",
+                type: "text",
+                default: "",
+                style: "grid-column: 1 / -1;"
+            },
+            {
+                id: "gameId",
+                label: "Game / Category Name or ID",
+                type: "text",
+                default: ""
+            },
+            {
+                id: "description",
+                label: "Marker Description (optional)",
+                type: "text",
+                default: "Triggered marker"
+            },
+            {
+                id: "rewardName",
+                label: "Reward Name or ID",
+                type: "text",
+                default: ""
+            },
+            {
+                id: "guestStarSlotId",
+                label: "Guest Star Slot ID (1–5)",
+                type: "text",
+                default: "1"
+            },
+            {
+                id: "guestStarMuteAudio",
+                label: "Audio",
+                type: "select",
+                options: [
+                    { value: "live", label: "Live (Unmuted)" },
+                    { value: "muted", label: "Muted" }
+                ],
+                default: "live"
+            },
+            {
+                id: "guestStarMuteVideo",
+                label: "Video",
+                type: "select",
+                options: [
+                    { value: "live", label: "Live (Visible)" },
+                    { value: "muted", label: "Hidden" }
+                ],
+                default: "live"
+            }
+        ]
+    }, MODULE_ID);
+
+    // ─── Twitch Autocomplete Suggestion Helper ───────────────────────────────
+    const TWITCH_COMMANDS = [
+        { cmd: "/timeout", desc: "/timeout <user> [sec] [reason]" },
+        { cmd: "/ban", desc: "/ban <user> [reason]" },
+        { cmd: "/unban", desc: "/unban <user>" },
+        { cmd: "/shoutout", desc: "/shoutout <user>" },
+        { cmd: "/announce", desc: "/announce <message>" },
+        { cmd: "/clear", desc: "/clear (clears chat)" },
+        { cmd: "/me", desc: "/me <message>" },
+        { cmd: "/subscribers", desc: "/subscribers (enable sub-only)" },
+        { cmd: "/subscribersoff", desc: "/subscribersoff (disable sub-only)" },
+        { cmd: "/emotesonly", desc: "/emotesonly (enable emote-only)" },
+        { cmd: "/emotesonlyoff", desc: "/emotesonlyoff (disable emote-only)" },
+        { cmd: "/slow", desc: "/slow [seconds]" },
+        { cmd: "/slowoff", desc: "/slowoff (disable slow)" },
+        { cmd: "/mods", desc: "/mods (list moderators)" },
+        { cmd: "/vips", desc: "/vips (list VIPs)" }
+    ];
+
+    let activeIndex = 0;
+    let filteredCommands = [];
+    let activeInput = null;
+
+    function injectStyles() {
+        const styleId = "twitch-autocomplete-styles";
+        if (document.getElementById(styleId)) return;
+        const style = document.createElement("style");
+        style.id = styleId;
+        style.innerHTML = `
+            #twitch-autocomplete-menu {
+                position: absolute;
+                background: rgba(25, 25, 25, 0.98);
+                border: 1px solid var(--accent, #007acc);
+                border-radius: 6px;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.7), 0 0 10px rgba(0, 122, 204, 0.25);
+                z-index: 100000;
+                max-height: 200px;
+                overflow-y: auto;
+                font-family: 'Outfit', sans-serif;
+                box-sizing: border-box;
+                backdrop-filter: blur(8px);
+                scrollbar-width: thin;
+                scrollbar-color: var(--accent, #007acc) #1a1a1a;
+            }
+            #twitch-autocomplete-menu::-webkit-scrollbar {
+                width: 6px;
+            }
+            #twitch-autocomplete-menu::-webkit-scrollbar-track {
+                background: #1a1a1a;
+            }
+            #twitch-autocomplete-menu::-webkit-scrollbar-thumb {
+                background: var(--accent, #007acc);
+                border-radius: 3px;
+            }
+            .twitch-autocomplete-item {
+                padding: 8px 12px;
+                cursor: pointer;
+                display: flex;
+                flex-direction: column;
+                border-bottom: 1px solid #333;
+                transition: all 0.15s ease;
+                box-sizing: border-box;
+            }
+            .twitch-autocomplete-item:last-child {
+                border-bottom: none;
+            }
+            .twitch-autocomplete-item.active {
+                background: var(--accent, #007acc);
+            }
+            .twitch-autocomplete-item:hover {
+                background: rgba(255, 255, 255, 0.05);
+            }
+            .twitch-autocomplete-item.active:hover {
+                background: var(--accent, #007acc);
+            }
+            .twitch-autocomplete-cmd {
+                font-weight: bold;
+                color: #ffffff;
+                font-size: 0.95em;
+            }
+            .twitch-autocomplete-desc {
+                font-size: 0.8em;
+                color: #aaa;
+                margin-top: 2px;
+            }
+            .twitch-autocomplete-item.active .twitch-autocomplete-desc {
+                color: #e0e0e0;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function removeStyles() {
+        const style = document.getElementById("twitch-autocomplete-styles");
+        if (style) style.remove();
+    }
+
+    function showMenu(input, commands) {
+        activeInput = input;
+        filteredCommands = commands;
+        activeIndex = 0;
+
+        let menu = document.getElementById("twitch-autocomplete-menu");
+        if (!menu) {
+            menu = document.createElement("div");
+            menu.id = "twitch-autocomplete-menu";
+            document.body.appendChild(menu);
+        }
+
+        renderMenuContent(menu);
+        positionMenu(menu, input);
+    }
+
+    function hideMenu() {
+        const menu = document.getElementById("twitch-autocomplete-menu");
+        if (menu) menu.remove();
+        activeInput = null;
+        filteredCommands = [];
+    }
+
+    function positionMenu(menu, input) {
+        const rect = input.getBoundingClientRect();
+        menu.style.top = (window.scrollY + rect.bottom + 4) + "px";
+        menu.style.left = (window.scrollX + rect.left) + "px";
+        menu.style.width = rect.width + "px";
+    }
+
+    function renderMenuContent(menu) {
+        menu.innerHTML = "";
+        filteredCommands.forEach((item, index) => {
+            const div = document.createElement("div");
+            div.className = `twitch-autocomplete-item ${index === activeIndex ? 'active' : ''}`;
+            div.innerHTML = `
+                <span class="twitch-autocomplete-cmd">${item.cmd}</span>
+                <span class="twitch-autocomplete-desc">${item.desc}</span>
+            `;
+            div.onclick = (e) => {
+                e.stopPropagation();
+                selectCommand(item.cmd);
+            };
+            menu.appendChild(div);
+        });
+        
+        const activeItem = menu.children[activeIndex];
+        if (activeItem) {
+            activeItem.scrollIntoView({ block: "nearest" });
+        }
+    }
+
+    function selectCommand(cmd) {
+        if (!activeInput) return;
+        activeInput.value = cmd + " ";
+        activeInput.dispatchEvent(new Event('input', { bubbles: true }));
+        activeInput.dispatchEvent(new Event('change', { bubbles: true }));
+        activeInput.focus();
+        hideMenu();
+    }
+
+    function handleInput(e) {
+        const target = e.target;
+        if (!target || !target.classList.contains('cmd-custom-message')) {
+            hideMenu();
+            return;
+        }
+
+        const commandRow = target.closest('.command-row');
+        if (!commandRow) {
+            hideMenu();
+            return;
+        }
+        
+        const typeSelect = commandRow.querySelector('.cmd-type');
+        if (!typeSelect || (typeSelect.value !== 'twitch_send_message' && typeSelect.value !== 'twitch_command')) {
+            hideMenu();
+            return;
+        }
+
+        if (typeSelect.value === 'twitch_command') {
+            const commandTypeSelect = commandRow.querySelector('.cmd-custom-commandType');
+            if (!commandTypeSelect || commandTypeSelect.value !== 'send_message') {
+                hideMenu();
+                return;
+            }
+        }
+
+        updateBanWarning(target);
+
+        const value = target.value;
+        if (value.startsWith("/")) {
+            const query = value.toLowerCase();
+            const matches = TWITCH_COMMANDS.filter(item => 
+                item.cmd.toLowerCase().startsWith(query)
+            );
+            if (matches.length > 0) {
+                showMenu(target, matches);
+            } else {
+                hideMenu();
+            }
+        } else {
+            hideMenu();
+        }
+    }
+
+    function updateBanWarning(input) {
+        if (!input) return;
+        const parent = input.parentElement;
+        if (!parent) return;
+
+        const val = (input.value || "").trim().toLowerCase();
+        const hasWarning = val.startsWith("/ban") || val.startsWith("/timeout");
+        
+        let warningEl = parent.querySelector(".twitch-ban-warning");
+        
+        if (hasWarning) {
+            if (!warningEl) {
+                warningEl = document.createElement("div");
+                warningEl.className = "twitch-ban-warning";
+                warningEl.style.cssText = `
+                    color: #ffb74d;
+                    font-size: 0.82em;
+                    margin-top: 6px;
+                    display: flex;
+                    align-items: flex-start;
+                    gap: 6px;
+                    background: rgba(255, 183, 77, 0.08);
+                    border: 1px solid rgba(255, 183, 77, 0.25);
+                    padding: 8px 10px;
+                    border-radius: 4px;
+                    box-sizing: border-box;
+                    line-height: 1.4;
+                `;
+                warningEl.innerHTML = `
+                    <span style="font-size: 1.1em;">⚠️</span>
+                    <span><strong>Warning:</strong> Twitch does not tolerate automated bans or timeouts. Triggering moderation actions automatically on events can get your bot/account suspended.</span>
+                `;
+                parent.appendChild(warningEl);
+            }
+        } else {
+            if (warningEl) {
+                warningEl.remove();
+            }
+        }
+    }
+
+    let isUpdatingDOM = false;
+    function runWithoutObserver(fn) {
+        if (isUpdatingDOM) {
+            fn();
+            return;
+        }
+        const targetNode = document.getElementById('triggers-container');
+        const active = (triggerObserver && targetNode);
+        if (active) {
+            triggerObserver.disconnect();
+        }
+        isUpdatingDOM = true;
+        try {
+            fn();
+        } finally {
+            isUpdatingDOM = false;
+            if (active && targetNode) {
+                triggerObserver.observe(targetNode, { childList: true, subtree: true });
+            }
+        }
+    }
+
+    function handleDocumentChange(e) {
+        if (e.target) {
+            if (e.target.classList.contains('t-custom-eventType')) {
+                const card = e.target.closest('.trigger-card');
+                if (card) {
+                    runWithoutObserver(() => updateTriggerFieldsVisibility(card));
+                }
+            }
+            if (e.target.classList.contains('cmd-custom-commandType')) {
+                const row = e.target.closest('.command-row');
+                if (row) {
+                    runWithoutObserver(() => updateCommandFieldsVisibility(row));
+                }
+            }
+            if (e.target.classList.contains('t-trigger-type') || e.target.classList.contains('cmd-type')) {
+                setTimeout(() => {
+                    runWithoutObserver(updateAllTwitchFieldsVisibility);
+                }, 50);
+            }
+        }
+    }
+
+    function startObservingTriggers() {
+        const targetNode = document.getElementById('triggers-container');
+        if (!targetNode) return;
+        
+        runWithoutObserver(() => {
+            scanAllInputs();
+            updateAllTwitchFieldsVisibility();
+        });
+
+        triggerObserver = new MutationObserver(() => {
+            runWithoutObserver(() => {
+                scanAllInputs();
+                updateAllTwitchFieldsVisibility();
+            });
+        });
+
+        triggerObserver.observe(targetNode, { childList: true, subtree: true });
+        document.addEventListener('change', handleDocumentChange);
+    }
+
+    function stopObservingTriggers() {
+        if (triggerObserver) {
+            triggerObserver.disconnect();
+            triggerObserver = null;
+        }
+        document.removeEventListener('change', handleDocumentChange);
+    }
+
+    function scanAllInputs() {
+        const inputs = document.querySelectorAll('.cmd-custom-message');
+        inputs.forEach(input => {
+            const commandRow = input.closest('.command-row');
+            if (commandRow) {
+                const typeSelect = commandRow.querySelector('.cmd-type');
+                if (typeSelect && (typeSelect.value === 'twitch_send_message' || typeSelect.value === 'twitch_command')) {
+                    if (typeSelect.value === 'twitch_command') {
+                        const commandTypeSelect = commandRow.querySelector('.cmd-custom-commandType');
+                        if (commandTypeSelect && commandTypeSelect.value === 'send_message') {
+                            updateBanWarning(input);
+                        }
+                    } else {
+                        updateBanWarning(input);
+                    }
+                }
+            }
+        });
+    }
+
+    function handleKeyDown(e) {
+        if (!activeInput) return;
+        const menu = document.getElementById("twitch-autocomplete-menu");
+        if (!menu) return;
+
+        if (e.key === "ArrowDown") {
+            e.preventDefault();
+            e.stopPropagation();
+            activeIndex = (activeIndex + 1) % filteredCommands.length;
+            renderMenuContent(menu);
+        } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            e.stopPropagation();
+            activeIndex = (activeIndex - 1 + filteredCommands.length) % filteredCommands.length;
+            renderMenuContent(menu);
+        } else if (e.key === "Enter" || e.key === "Tab") {
+            e.preventDefault();
+            e.stopPropagation();
+            const selected = filteredCommands[activeIndex];
+            if (selected) {
+                selectCommand(selected.cmd);
+            }
+        } else if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            hideMenu();
+        }
+    }
+
+    function handleClick(e) {
+        const menu = document.getElementById("twitch-autocomplete-menu");
+        if (menu && !menu.contains(e.target) && e.target !== activeInput) {
+            hideMenu();
+        }
+    }
+
+    function updateTriggerFieldsVisibility(card) {
+        const typeSelect = card.querySelector('.t-trigger-type');
+        if (!typeSelect || typeSelect.value !== 'twitch_event') return;
+
+        const eventTypeSelect = card.querySelector('.t-custom-eventType');
+        if (!eventTypeSelect) return;
+
+        const eventType = eventTypeSelect.value;
+
+        const fields = {
+            messageContains: eventType === 'message' || eventType === 'reward_redeemed' || eventType === 'power_up_redeemed',
+            exactMatch: eventType === 'message' || eventType === 'reward_redeemed' || eventType === 'power_up_redeemed',
+            isCommand: eventType === 'message',
+            minMonths: eventType === 'subscription',
+            minGiftCount: eventType === 'gifted_subscription',
+            reasonContains: eventType === 'user_banned',
+            minBits: eventType === 'cheer',
+            rewardId: eventType === 'reward_redeemed' || eventType === 'power_up_redeemed',
+            guestState: eventType === 'guest_star_guest_update'
+        };
+
+        for (const [fieldId, shouldShow] of Object.entries(fields)) {
+            const el = card.querySelector(`.t-custom-${fieldId}`);
+            if (el) {
+                const parent = el.closest('div');
+                if (parent) {
+                    parent.style.display = shouldShow ? 'block' : 'none';
+                }
+            }
+        }
+
+        const rewardSelect = card.querySelector('select.t-custom-rewardId');
+        if (rewardSelect) {
+            populateRewardDropdown(rewardSelect, eventType);
+        }
+    }
+
+    function updateCommandFieldsVisibility(row) {
+        const typeSelect = row.querySelector('.cmd-type');
+        if (!typeSelect || typeSelect.value !== 'twitch_command') return;
+
+        const commandTypeSelect = row.querySelector('.cmd-custom-commandType');
+        if (!commandTypeSelect) return;
+
+        const commandType = commandTypeSelect.value;
+
+        const guestStarUserCommands = ['guest_star_invite', 'guest_star_cancel_invite', 'guest_star_assign_slot', 'guest_star_remove_slot'];
+        const guestStarSlotCommands = ['guest_star_assign_slot', 'guest_star_remove_slot', 'guest_star_slot_settings'];
+
+        const fields = {
+            message: commandType === 'send_message' || commandType === 'announce',
+            targetUser: ['ban_user', 'timeout_user', 'unban_user', 'add_moderator', 'remove_moderator', 'add_vip', 'remove_vip', 'shoutout', 'raid', ...guestStarUserCommands].includes(commandType),
+            reason: ['ban_user', 'timeout_user'].includes(commandType),
+            duration: commandType === 'timeout_user' || commandType === 'commercial',
+            seconds: commandType === 'slow_mode',
+            minutes: commandType === 'follower_only',
+            enabled: ['subscriber_only', 'emote_only'].includes(commandType),
+            title: commandType === 'update_stream',
+            gameId: commandType === 'update_stream',
+            description: commandType === 'stream_marker',
+            rewardName: ['enable_reward', 'disable_reward'].includes(commandType),
+            guestStarSlotId: guestStarSlotCommands.includes(commandType),
+            guestStarMuteAudio: commandType === 'guest_star_slot_settings',
+            guestStarMuteVideo: commandType === 'guest_star_slot_settings'
+        };
+
+        for (const [fieldId, shouldShow] of Object.entries(fields)) {
+            const el = row.querySelector(`.cmd-custom-${fieldId}`);
+            if (el) {
+                const parent = el.closest('div');
+                if (parent) {
+                    parent.style.display = shouldShow ? 'block' : 'none';
+                }
+            }
+        }
+    }
+
+    function updateAllTwitchFieldsVisibility() {
+        document.querySelectorAll('.trigger-card').forEach(card => {
+            updateTriggerFieldsVisibility(card);
+            card.querySelectorAll('.command-row').forEach(row => {
+                updateCommandFieldsVisibility(row);
+            });
+        });
+    }
+
+    // Register Custom Unified Trigger
+    window.TheaterController.registerTrigger("twitch_event", 
+        (t, eventData) => {
+            const selectedEventType = t.eventType || "message";
+            if (selectedEventType !== eventData.eventType) return false;
+
+            if (selectedEventType === "message") {
+                const msg = (eventData.message || "").trim();
+                if (t.messageContains) {
+                    const sub = t.messageContains.trim().toLowerCase();
+                    if (!msg.toLowerCase().includes(sub)) return false;
+                }
+                if (t.exactMatch) {
+                    const exact = t.exactMatch.trim().toLowerCase();
+                    if (msg.toLowerCase() !== exact) return false;
+                }
+                if (t.isCommand) {
+                    const cmd = t.isCommand.trim().toLowerCase();
+                    if (!msg.toLowerCase().startsWith(cmd)) return false;
+                }
+            } else if (selectedEventType === "subscription") {
+                const months = parseInt(eventData.months || 1, 10);
+                const minMonths = parseInt(t.minMonths || 1, 10);
+                if (months < minMonths) return false;
+            } else if (selectedEventType === "gifted_subscription") {
+                const count = parseInt(eventData.giftCount || 1, 10);
+                const minCount = parseInt(t.minGiftCount || 1, 10);
+                if (count < minCount) return false;
+            } else if (selectedEventType === "user_banned") {
+                if (t.reasonContains) {
+                    const reason = (eventData.reason || "").trim().toLowerCase();
+                    const match = t.reasonContains.trim().toLowerCase();
+                    if (!reason.includes(match)) return false;
+                }
+            } else if (selectedEventType === "cheer") {
+                const bits = parseInt(eventData.bits || 0, 10);
+                const minBits = parseInt(t.minBits || 1, 10);
+                if (bits < minBits) return false;
+            } else if (selectedEventType === "reward_redeemed") {
+                if (t.rewardId) {
+                    const filterVal = t.rewardId.trim().toLowerCase();
+                    const gotId = (eventData.reward_id || "").trim().toLowerCase();
+                    const gotTitle = (eventData.reward_title || "").trim().toLowerCase();
+                    if (gotId !== filterVal && gotTitle !== filterVal) {
+                        return false;
+                    }
+                }
+                const msg = (eventData.message || "").trim();
+                if (t.messageContains && t.messageContains.trim()) {
+                    const sub = t.messageContains.trim().toLowerCase();
+                    if (!msg.toLowerCase().includes(sub)) return false;
+                }
+                if (t.exactMatch && t.exactMatch.trim()) {
+                    const exact = t.exactMatch.trim().toLowerCase();
+                    if (msg.toLowerCase() !== exact) return false;
+                }
+                if (t.isCommand && t.isCommand.trim()) {
+                    const cmd = t.isCommand.trim().toLowerCase();
+                    if (!msg.toLowerCase().startsWith(cmd)) return false;
+                }
+            } else if (selectedEventType === "power_up_redeemed") {
+                if (t.rewardId) {
+                    const filterVal = t.rewardId.trim().toLowerCase();
+                    const gotId = (eventData.rewardId || "").trim().toLowerCase();
+                    const gotName = (eventData.power_up_name || "").trim().toLowerCase();
+                    if (gotId !== filterVal && gotName !== filterVal) {
+                        return false;
+                    }
+                }
+                const msg = (eventData.message || "").trim();
+                if (t.messageContains && t.messageContains.trim()) {
+                    const sub = t.messageContains.trim().toLowerCase();
+                    if (!msg.toLowerCase().includes(sub)) return false;
+                }
+                if (t.exactMatch && t.exactMatch.trim()) {
+                    const exact = t.exactMatch.trim().toLowerCase();
+                    if (msg.toLowerCase() !== exact) return false;
+                }
+                if (t.isCommand && t.isCommand.trim()) {
+                    const cmd = t.isCommand.trim().toLowerCase();
+                    if (!msg.toLowerCase().startsWith(cmd)) return false;
+                }
+            } else if (selectedEventType === "guest_star_guest_update") {
+                if (t.guestState && t.guestState !== "") {
+                    const state = (eventData.guestState || "").toLowerCase();
+                    if (state !== t.guestState.toLowerCase()) return false;
+                }
+            }
+            return true;
+        },
+        {
+            label: "Twitch: Event Received",
+            fields: [
+                {
+                    id: "eventType",
+                    label: "Twitch Event Type",
+                    type: "select",
+                    options: [
+                        { value: "message", label: "Chat Message Sent" },
+                        { value: "subscription", label: "New / Re-Subscription" },
+                        { value: "gifted_subscription", label: "Gifted Subscription" },
+                        { value: "cheer", label: "Bits Cheer" },
+                        { value: "reward_redeemed", label: "Channel Points Redeem" },
+                        { value: "power_up_redeemed", label: "Bits Power-up Redeem" },
+                        { value: "host", label: "Channel Hosted / Raided" },
+                        { value: "user_banned", label: "User Banned" },
+                        { value: "user_timeout", label: "User Timed Out" },
+                        { value: "message_deleted", label: "Message Deleted" },
+                        { value: "chat_cleared", label: "Chat Cleared" },
+                        { value: "guest_star_guest_update", label: "Guest Star: Guest Status Changed" }
+                    ],
+                    default: "message"
+                },
+                {
+                    id: "messageContains",
+                    label: "Message Contains (optional - only for rewards/power-ups with text input)",
+                    type: "text",
+                    default: "",
+                    flexBasis: "100%"
+                },
+                {
+                    id: "exactMatch",
+                    label: "Exact Match (optional - only for rewards/power-ups with text input)",
+                    type: "text",
+                    default: "",
+                    flexBasis: "100%"
+                },
+                {
+                    id: "isCommand",
+                    label: "Starts With Command (optional, e.g. !play)",
+                    type: "text",
+                    default: "",
+                    flexBasis: "100%"
+                },
+                {
+                    id: "minMonths",
+                    label: "Minimum Months",
+                    type: "number",
+                    default: 1
+                },
+                {
+                    id: "minGiftCount",
+                    label: "Minimum Gifted Count",
+                    type: "number",
+                    default: 1
+                },
+                {
+                    id: "minBits",
+                    label: "Minimum Bits",
+                    type: "number",
+                    default: 1
+                },
+                {
+                    id: "rewardId",
+                    label: "Specific Reward / Power-up",
+                    type: "select",
+                    options: [
+                        { value: "", label: "Any Reward/Power-up" }
+                    ],
+                    default: ""
+                },
+                {
+                    id: "reasonContains",
+                    label: "Reason Contains (optional)",
+                    type: "text",
+                    default: ""
+                },
+                {
+                    id: "guestState",
+                    label: "Guest State Filter (leave empty for any)",
+                    type: "select",
+                    options: [
+                        { value: "", label: "Any State" },
+                        { value: "invited", label: "Invited" },
+                        { value: "accepted", label: "Accepted" },
+                        { value: "ready", label: "Ready" },
+                        { value: "backstage", label: "Backstage" },
+                        { value: "live", label: "Live" },
+                        { value: "removed", label: "Removed" }
+                    ],
+                    default: ""
+                }
+            ]
+        },
+        MODULE_ID
+    );
+
+    // Register Context Providers for Twitch API
+    if (window.TheaterController.registerContextProvider) {
+        window.TheaterController.registerContextProvider("twitch_user_info", async (inputs, payload) => {
+            const resolve = (txt) => {
+                return window.TheaterController.replaceVariables ?
+                    window.TheaterController.replaceVariables(txt, [], payload) :
+                    replaceTemplateVariables(txt, [], payload);
+            };
+            const username = resolve(inputs.username || "{username}");
+            if (!username) throw new Error("No username specified");
+
+            const token = await getValidToken();
+            if (!token) throw new Error("Missing Twitch token");
+
+            const response = await fetch(`https://api.twitch.tv/helix/users?login=${encodeURIComponent(username)}`, {
+                method: 'GET',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Helix error: ${response.status} - ${text}`);
+            }
+            const data = await response.json();
+            return { twitch_user: data };
+        }, {
+            label: "Twitch: Get User Info",
+            fields: [
+                { id: "username", label: "Username to check", type: "text", default: "{username}" }
+            ]
+        }, MODULE_ID);
+
+        window.TheaterController.registerContextProvider("twitch_channel_info", async (inputs, payload) => {
+            const resolve = (txt) => {
+                return window.TheaterController.replaceVariables ?
+                    window.TheaterController.replaceVariables(txt, [], payload) :
+                    replaceTemplateVariables(txt, [], payload);
+            };
+            const username = resolve(inputs.username || "{username}");
+            if (!username) throw new Error("No username specified");
+
+            const token = await getValidToken();
+            if (!token) throw new Error("Missing Twitch token");
+
+            const targetUserId = await resolveUserId(username);
+            if (!targetUserId) throw new Error(`Could not resolve target user ID for "${username}"`);
+
+            const response = await fetch(`https://api.twitch.tv/helix/channels?broadcaster_id=${targetUserId}`, {
+                method: 'GET',
+                headers: {
+                    'Client-Id': CLIENT_ID,
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Helix error: ${response.status} - ${text}`);
+            }
+            const data = await response.json();
+            return { twitch_channel: data };
+        }, {
+            label: "Twitch: Get Channel Info",
+            fields: [
+                { id: "username", label: "Broadcaster username to check", type: "text", default: "{username}" }
+            ]
+        }, MODULE_ID);
+
+        window.TheaterController.registerContextProvider("guest_star_session_info", async (inputs, payload) => {
+            const session = await fetchGuestStarSession();
+            if (!session) throw new Error("No active Guest Star session found.");
+            return { guest_star_session: session };
+        }, {
+            label: "Twitch: Get Active Guest Star Session",
+            fields: []
+        }, MODULE_ID);
+    }
+
+    window.TheaterController.registerModule(MODULE_ID, MODULE_DEFINITION);
+})();

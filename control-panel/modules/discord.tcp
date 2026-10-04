@@ -1,0 +1,263 @@
+// @theater-tcp-module
+(function() {
+    const MODULE_ID = "discord_api";
+    let currentConfig = {};
+
+    function safeLog(msg, isError = false) {
+        if (window.logMsg) {
+            window.logMsg(msg, isError);
+        } else {
+            console.log(msg);
+        }
+    }
+
+    const MODULE_DEFINITION = {
+        name: "Discord API",
+        description: "Enables posting text notifications to arbitrary Discord channels in the background using a hidden webview window. No developer credentials or bots required. <br><button class='btn-green' onclick='window.TheaterController.modules.discord_api.definition.openLogin()' style='margin-top: 5px; font-size: 0.85em; padding: 3px 8px; cursor: pointer; border-radius: 4px; border: none;'>🔗 Login to Discord</button>",
+        configFields: [
+            {
+                id: "load_delay",
+                label: "Channel Load Delay (ms) - Time to wait for Discord page to load in background",
+                type: "number",
+                default: 5000
+            }
+        ],
+
+        onLoad(moduleConfig) {
+            safeLog("[Discord API] Headless Webview Module loaded successfully.");
+            currentConfig = moduleConfig;
+        },
+
+        onUnload() {
+            safeLog("[Discord API] Module unloaded.");
+        },
+
+        openLogin() {
+            if (window.__TAURI__) {
+                safeLog("[Discord API] Opening visible Discord login webview...");
+                window.__TAURI__.core.invoke('open_service_login', {
+                    url: "https://discord.com/app",
+                    title: "Discord Login - Theater"
+                }).catch(err => {
+                    safeLog(`[Discord API Error] Failed to open login window: ${err}`, true);
+                });
+            } else {
+                safeLog("[Discord API Warning] Not running in Tauri. Opening Discord web app in browser tab...", true);
+                window.open("https://discord.com/app", "_blank");
+            }
+        }
+    };
+
+    function getFieldVal(fieldId) {
+        const el = document.querySelector(`.mod-field-discord_api[data-field-id="${fieldId}"]`);
+        return el ? el.value.trim() : (currentConfig[fieldId] || "");
+    }
+
+    async function postDiscordMessage(channelUrl, messageText) {
+        if (!channelUrl) {
+            throw new Error("Discord Channel URL is empty.");
+        }
+        if (!messageText) {
+            throw new Error("Message text is empty.");
+        }
+
+        const delayVal = parseInt(getFieldVal("load_delay")) || 5000;
+
+        if (window.__TAURI__) {
+            safeLog(`[Discord API] Spawning background hidden webview to post to: ${channelUrl}`);
+            
+            const jsPayload = `
+            (function() {
+                console.log("[Theater Discord] Headless script executing...");
+                const txt = ${JSON.stringify(messageText)};
+                const textarea = document.querySelector('[role="textbox"]') || document.querySelector('[contenteditable="true"]');
+                if (textarea) {
+                    console.log("[Theater Discord] Textbox found. Focusing...");
+                    textarea.focus();
+                    
+                    // Force the Selection range inside the editor to link Slate's Selection
+                    try {
+                        const range = document.createRange();
+                        range.selectNodeContents(textarea);
+                        range.collapse(false); // caret at the end
+                        const sel = window.getSelection();
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                    } catch(e) {
+                        console.warn("[Theater Discord] Selection range setup failed:", e);
+                    }
+
+                    // Try to find the React/Slate editor instance to directly update State
+                    let stateUpdated = false;
+                    try {
+                        const reactKeys = Object.keys(textarea).filter(k => 
+                            k.startsWith('__reactProps$') || 
+                            k.startsWith('__reactFiber$') || 
+                            k.startsWith('__reactContainer$') || 
+                            k.startsWith('__reactInternalInstance$')
+                        );
+                        
+                        let editor = null;
+                        for (const key of reactKeys) {
+                            const val = textarea[key];
+                            if (!val) continue;
+                            if (val.editor && typeof val.editor.insertText === 'function') {
+                                editor = val.editor;
+                                break;
+                            }
+                            let curr = val;
+                            while (curr) {
+                                if (curr.memoizedProps && curr.memoizedProps.editor && typeof curr.memoizedProps.editor.insertText === 'function') {
+                                    editor = curr.memoizedProps.editor;
+                                    break;
+                                }
+                                if (curr.pendingProps && curr.pendingProps.editor && typeof curr.pendingProps.editor.insertText === 'function') {
+                                    editor = curr.pendingProps.editor;
+                                    break;
+                                }
+                                curr = curr.return;
+                            }
+                            if (editor) break;
+                        }
+                        
+                        if (editor) {
+                            console.log("[Theater Discord] Found Slate editor instance.");
+                            if (!editor.selection) {
+                                console.log("[Theater Discord] Selection was null. Setting default selection...");
+                                editor.selection = {
+                                    anchor: { path: [0, 0], offset: 0 },
+                                    focus: { path: [0, 0], offset: 0 }
+                                };
+                            }
+                            console.log("[Theater Discord] Injecting text into state...");
+                            editor.insertText(txt);
+                            stateUpdated = true;
+                        }
+                    } catch(e) {
+                        console.error("[Theater Discord] Error trying to find/use React Slate editor:", e);
+                    }
+                    
+                    // Fallback to Event/execCommand approach if React injection failed
+                    if (!stateUpdated) {
+                        console.log("[Theater Discord] Slate editor not found. Falling back to Event dispatch & execCommand...");
+                        const beforeInputEvent = new InputEvent('beforeinput', {
+                            bubbles: true,
+                            cancelable: true,
+                            inputType: 'insertText',
+                            data: txt
+                        });
+                        const allowed = textarea.dispatchEvent(beforeInputEvent);
+                        if (allowed) {
+                            const inserted = document.execCommand('insertText', false, txt);
+                            console.log("[Theater Discord] execCommand insertText result:", inserted);
+                        }
+                        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                    
+                    setTimeout(() => {
+                        console.log("[Theater Discord] Dispatching Enter event...");
+                        const enterEvent = new KeyboardEvent('keydown', {
+                            bubbles: true,
+                            cancelable: true,
+                            key: 'Enter',
+                            code: 'Enter',
+                            keyCode: 13,
+                            which: 13
+                        });
+                        textarea.dispatchEvent(enterEvent);
+                    }, 500);
+                } else {
+                    console.error("[Theater Discord] Textbox not found!");
+                }
+            })();
+            `;
+
+            await window.__TAURI__.core.invoke('open_hidden_webview', {
+                url: channelUrl,
+                js: jsPayload,
+                delayMs: delayVal,
+                closeDelayMs: 2000
+            });
+            
+            safeLog("[Discord API] Headless posting task triggered in background.");
+        } else {
+            safeLog("[Discord API Warning] Not running in Tauri. Copying message to clipboard and opening page in browser tab...", true);
+            
+            // Clipboard fallback
+            if (navigator.clipboard) {
+                await navigator.clipboard.writeText(messageText);
+                safeLog("[Discord API] Copied message to clipboard. Please paste and press Enter on the opened page.");
+            }
+            window.open(channelUrl, "_blank");
+        }
+    }
+
+    function replaceTemplateVariables(text, matches, payload) {
+        let result = text || "";
+        if (matches && Array.isArray(matches)) {
+            matches.forEach((val, idx) => {
+                result = result.replace(new RegExp(`\\{${idx + 1}\\}`, 'g'), val || "");
+            });
+        }
+        if (payload) {
+            Object.entries(payload).forEach(([key, val]) => {
+                if (typeof val !== 'object' && val !== null) {
+                    result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), val);
+                }
+            });
+            if (payload.customData && typeof payload.customData === 'object') {
+                Object.entries(payload.customData).forEach(([key, val]) => {
+                    if (typeof val !== 'object' && val !== null) {
+                        result = result.replace(new RegExp(`\\{customData\\.${key}\\}`, 'g'), val);
+                        result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), val);
+                    }
+                });
+            }
+        }
+        return result;
+    }
+
+    // Register Command / Unified Action
+    window.TheaterController.registerCommand("discord_command", async (inputs, matches, payload) => {
+        const resolve = (txt) => {
+            if (!txt) return "";
+            return window.TheaterController.replaceVariables ?
+                window.TheaterController.replaceVariables(txt, matches, payload) :
+                replaceTemplateVariables(txt, matches, payload);
+        };
+
+        const resolvedChannelUrl = resolve(inputs.channelUrl || "").trim();
+        const resolvedMessage = resolve(inputs.message || "");
+
+        if (!resolvedChannelUrl) {
+            safeLog("[Discord API Error] Failed to execute: Channel URL is missing.", true);
+            return;
+        }
+
+        try {
+            await postDiscordMessage(resolvedChannelUrl, resolvedMessage);
+        } catch (err) {
+            safeLog(`[Discord API Error] Action execution failed: ${err.message || err}`, true);
+        }
+    }, {
+        label: "Discord: Post Message (Background Webview)",
+        fields: [
+            {
+                id: "channelUrl",
+                label: "Discord Channel URL (e.g. https://discord.com/channels/123/456)",
+                type: "text",
+                default: "",
+                style: "grid-column: 1 / -1;"
+            },
+            {
+                id: "message",
+                label: "Message Content (supports {username}, etc.)",
+                type: "text",
+                default: "Hello from Control Panel! {username}",
+                style: "grid-column: 1 / -1;"
+            }
+        ]
+    }, MODULE_ID);
+
+    window.TheaterController.registerModule(MODULE_ID, MODULE_DEFINITION);
+})();
