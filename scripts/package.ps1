@@ -5,10 +5,12 @@
 # proxy scripts (control-panel\.clinerules).
 # People extract it into C:\ProgramData\obs-studio\plugins.
 # Build first: cargo build --release
-param([string]$Version = "0.1.0")
+# The version is Cargo.toml's unless -Version says otherwise.
+param([string]$Version = "")
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
+if (!$Version) { $Version = (Select-String -LiteralPath "$root\Cargo.toml" -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value }
 $work = "$root\dist\stage"
 $stage = "$work\theater-control-panel"
 $dll = "$root\target\release\theater_control_panel.dll"
@@ -19,7 +21,10 @@ Copy-Item -LiteralPath $dll "$stage\bin\64bit\theater-control-panel.dll"
 
 # The same runtime files deploy.ps1 copies (no src-tauri, tests or project files), tracked ones only
 foreach ($item in 'control_panel.html', 'icon.ico', 'icon.png', 'css', 'js', 'modules', 'overlays') {
-    foreach ($file in (git -C $root -c core.quotepath=off ls-files -- "control-panel/$item")) {
+    $files = @(git -C $root -c core.quotepath=off ls-files -- "control-panel/$item")
+    # Untracked, it would be left out without a word (icon.png once was: no menu icon)
+    if ($files.Count -eq 0) { throw "control-panel/$item isn't tracked by git, so the zip would be missing it." }
+    foreach ($file in $files) {
         $dest = Join-Path "$stage\data" $file
         New-Item -ItemType Directory -Force -Path (Split-Path -LiteralPath $dest) | Out-Null
         Copy-Item -LiteralPath (Join-Path $root $file) -Destination $dest

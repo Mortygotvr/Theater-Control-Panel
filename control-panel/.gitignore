@@ -19,6 +19,8 @@ src-tauri/target/
 GoogleAppsScript*.js
 *.log
 *.png
+# …but not the 🎭 Theater menu's icon, which the plugin ships
+!/icon.png
 *.txt
 recovered_config.json
 split_layout.json
