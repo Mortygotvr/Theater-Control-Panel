@@ -1541,6 +1541,29 @@
             .catch(() => {});
     }
 
+    // A command's fields with the Control Panel's variables resolved, for
+    // built-in and module commands alike, so every module gets them ready to
+    // use: text has its {…} filled in ({global.name}, {1}, {username},
+    // {{ math }}), and the fields a command declares as numbers are worked out
+    // to a number (0 when they can't be). A copy: the saved command keeps what
+    // was typed. Includes delay and duration, which a module may use for its
+    // own (LocalShock's shock length); executeCommand times the command with
+    // delayMs and durationMs, worked out from the saved command.
+    function resolveCommandFields(cmd, matches, payload) {
+        const run = { ...cmd };
+        const info = window.TheaterController.customCommands[cmd.type];
+        const fields = (info && info.uiConfig && Array.isArray(info.uiConfig.fields)) ? info.uiConfig.fields : [];
+        const numbers = new Set(fields.filter(f => f && f.type === 'number').map(f => f.id));
+        for (const [key, value] of Object.entries(cmd)) {
+            if (key === 'type') continue;
+            if (typeof value !== 'string' || !value.includes('{')) continue;
+            run[key] = numbers.has(key)
+                ? window.TheaterController.evalMath(value, matches, payload)
+                : replaceTemplateVariables(value, matches, payload);
+        }
+        return run;
+    }
+
     function executeCommand(cmd, triggerString, matches, payload) {
         return new Promise((resolve) => {
             const rawDelay = cmd.delay !== undefined ? cmd.delay : 0;
@@ -1549,61 +1572,64 @@
                 try {
                     const rawDuration = cmd.duration !== undefined ? cmd.duration : 0;
                     const durationMs = Math.max(0, Math.round(window.TheaterController.evalMath ? window.TheaterController.evalMath(rawDuration, matches, payload) : (parseFloat(rawDuration) || 0)));
+                    // Resolved now, after its delay: a variable another command
+                    // of the trigger just changed counts
+                    const run = resolveCommandFields(cmd, matches, payload);
 
-                    if (cmd.type === 'update_text') {
-                        if (cmd.textSource) {
-                            let finalTxt = replaceTemplateVariables(cmd.textContent || '', matches, payload);
-                            await obs.call('SetInputSettings', { inputName: cmd.textSource, inputSettings: { text: finalTxt } });
-                            logMsg(`[TEXT] Updated "${cmd.textSource}" → "${finalTxt.substring(0, 60)}${finalTxt.length > 60 ? '…' : ''}"`)
+                    if (run.type === 'update_text') {
+                        if (run.textSource) {
+                            const finalTxt = run.textContent || '';
+                            await obs.call('SetInputSettings', { inputName: run.textSource, inputSettings: { text: finalTxt } });
+                            logMsg(`[TEXT] Updated "${run.textSource}" → "${finalTxt.substring(0, 60)}${finalTxt.length > 60 ? '…' : ''}"`)
                         }
                         let textSceneItemId = null;
-                        if (cmd.textScene && cmd.textSource) {
+                        if (run.textScene && run.textSource) {
                             try {
-                                const textRes = await obs.call('GetSceneItemId', { sceneName: cmd.textScene, sourceName: cmd.textSource });
+                                const textRes = await obs.call('GetSceneItemId', { sceneName: run.textScene, sourceName: run.textSource });
                                 textSceneItemId = textRes.sceneItemId;
-                                await obs.call('SetSceneItemEnabled', { sceneName: cmd.textScene, sceneItemId: textSceneItemId, sceneItemEnabled: true });
+                                await obs.call('SetSceneItemEnabled', { sceneName: run.textScene, sceneItemId: textSceneItemId, sceneItemEnabled: true });
                             } catch (e) { logMsg(`Could not enable text source: ` + (e.error || e), true); }
                         }
-                        if (cmd.duration !== undefined && durationMs > 0) {
+                        if (run.duration !== undefined && durationMs > 0) {
                             setTimeout(async () => {
-                                if (cmd.textScene && textSceneItemId !== null) {
-                                    try { await obs.call('SetSceneItemEnabled', { sceneName: cmd.textScene, sceneItemId: textSceneItemId, sceneItemEnabled: false }); }
-                                    catch(err) { logMsg(`[TEXT] Failed to hide "${cmd.textSource}" after duration: ` + (err.error || err), true); }
+                                if (run.textScene && textSceneItemId !== null) {
+                                    try { await obs.call('SetSceneItemEnabled', { sceneName: run.textScene, sceneItemId: textSceneItemId, sceneItemEnabled: false }); }
+                                    catch(err) { logMsg(`[TEXT] Failed to hide "${run.textSource}" after duration: ` + (err.error || err), true); }
                                 }
                                 resolve();
                             }, durationMs);
                         } else { resolve(); }
-                    } else if (cmd.type === 'toggle_source') {
+                    } else if (run.type === 'toggle_source') {
                         let mainSceneItemId = null;
-                        if (cmd.scene && cmd.source) {
+                        if (run.scene && run.source) {
                             try {
-                                const { sceneItemId } = await obs.call('GetSceneItemId', { sceneName: cmd.scene, sourceName: cmd.source });
+                                const { sceneItemId } = await obs.call('GetSceneItemId', { sceneName: run.scene, sourceName: run.source });
                                 mainSceneItemId = sceneItemId;
-                                await obs.call('SetSceneItemEnabled', { sceneName: cmd.scene, sceneItemId: mainSceneItemId, sceneItemEnabled: true });
-                                logMsg(`[ACTIVATE] Enabled "${cmd.source}"`);
+                                await obs.call('SetSceneItemEnabled', { sceneName: run.scene, sceneItemId: mainSceneItemId, sceneItemEnabled: true });
+                                logMsg(`[ACTIVATE] Enabled "${run.source}"`);
                             } catch (e) { logMsg(`Could not enable main source: ` + (e.error || e), true); }
                         }
-                        if (cmd.duration !== undefined && durationMs > 0) {
+                        if (run.duration !== undefined && durationMs > 0) {
                             setTimeout(async () => {
-                                 if (cmd.scene && mainSceneItemId !== null) {
+                                 if (run.scene && mainSceneItemId !== null) {
                                      try {
-                                         await obs.call('SetSceneItemEnabled', { sceneName: cmd.scene, sceneItemId: mainSceneItemId, sceneItemEnabled: false });
-                                         logMsg(`[DEACTIVATE] Disabled "${cmd.source}"`);
-                                     } catch(err) { logMsg(`Failed to disable "${cmd.source}": ` + (err.error || err), true); }
+                                         await obs.call('SetSceneItemEnabled', { sceneName: run.scene, sceneItemId: mainSceneItemId, sceneItemEnabled: false });
+                                         logMsg(`[DEACTIVATE] Disabled "${run.source}"`);
+                                     } catch(err) { logMsg(`Failed to disable "${run.source}": ` + (err.error || err), true); }
                                  }
                                  resolve();
                             }, durationMs);
                         } else { resolve(); }
-                    } else if (cmd.type === THEATER_SCENE_CMD) {
-                        await fireTheaterScene(cmd, matches, payload);
+                    } else if (run.type === THEATER_SCENE_CMD) {
+                        await fireTheaterScene(run, matches, payload);
                         resolve();
-                    } else if (cmd.type === THEATER_VIS_CMD) {
-                        await setTheaterVisibility(cmd, durationMs);
+                    } else if (run.type === THEATER_VIS_CMD) {
+                        await setTheaterVisibility(run, durationMs);
                         resolve();
-                    } else if (window.TheaterController.customCommands[cmd.type]) {
-                        const cmdInfo = window.TheaterController.customCommands[cmd.type];
+                    } else if (window.TheaterController.customCommands[run.type]) {
+                        const cmdInfo = window.TheaterController.customCommands[run.type];
                         try {
-                            await cmdInfo.handler(cmd, matches, payload);
+                            await cmdInfo.handler(run, matches, payload);
                         } catch (e) {
                             logMsg(`[Command Error] Custom command "${cmd.type}" failed: ${e.message || e}`, true);
                         }
