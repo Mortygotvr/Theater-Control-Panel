@@ -6,6 +6,8 @@
     let currentConfig = {};
     let pollIntervalId = null;
     let hudIntervalId = null;
+    // Listening to Theater API · Ko-fi's events (its unlisten)
+    let unlistenPlugin = null;
     let isPollingInProgress = false;
 
     // Deduplication tracker for processed event IDs
@@ -595,19 +597,43 @@
             safeLog("[Ko-fi API] Module loaded successfully.");
             currentConfig = moduleConfig || {};
 
-            const relayUrl = getFieldVal("relay_url") || currentConfig.relay_url || MASTER_RELAY_URL;
-            if (relayUrl && relayUrl.trim()) {
-                const intervalSec = Math.max(3, parseInt(getFieldVal("poll_interval") || currentConfig.poll_interval) || 5);
-                safeLog(`[Ko-fi API] Polling enabled for relay: ${relayUrl} (every ${intervalSec}s)`);
-                
-                // Initial poll after 1s
-                setTimeout(() => {
-                    pollRelayServer();
-                }, 1000);
+            const startPolling = () => {
+                const relayUrl = getFieldVal("relay_url") || currentConfig.relay_url || MASTER_RELAY_URL;
+                if (relayUrl && relayUrl.trim()) {
+                    const intervalSec = Math.max(3, parseInt(getFieldVal("poll_interval") || currentConfig.poll_interval) || 5);
+                    safeLog(`[Ko-fi API] Polling enabled for relay: ${relayUrl} (every ${intervalSec}s)`);
 
-                pollIntervalId = setInterval(pollRelayServer, intervalSec * 1000);
+                    // Initial poll after 1s
+                    setTimeout(() => {
+                        pollRelayServer();
+                    }, 1000);
+
+                    pollIntervalId = setInterval(pollRelayServer, intervalSec * 1000);
+                } else {
+                    safeLog("[Ko-fi API] Relay URL is not configured. Ready for manual testing or relay setup.");
+                }
+            };
+
+            // Theater API · Ko-fi asks the proxy itself, and the proxy's queue
+            // empties on each read: when it's installed, this module takes its
+            // events (the theater_event signal) instead of asking too, or the
+            // two would take turns getting each donation
+            const tauri = window.__TAURI__;
+            if (tauri && tauri.core && tauri.event) {
+                tauri.core.invoke('obs_call_proc', { name: 'theater_api_kofi_state', returns: { json: 'string' } })
+                    .then(() => {
+                        safeLog("[Ko-fi API] Theater API · Ko-fi is installed: its events are used here, and this module doesn't ask the proxy.");
+                        tauri.event.listen('theater_event', (e) => {
+                            let msg;
+                            try { msg = JSON.parse((e.payload && e.payload.json) || '{}'); } catch (err) { return; }
+                            if (msg.type === 'alert' && msg.alert && msg.alert.platform === 'kofi' && msg.data) {
+                                processIncomingKofiEvent(msg.data, !!msg.alert.test);
+                            }
+                        }).then(unlisten => { unlistenPlugin = unlisten; });
+                    })
+                    .catch(startPolling);
             } else {
-                safeLog("[Ko-fi API] Relay URL is not configured. Ready for manual testing or relay setup.");
+                startPolling();
             }
 
             // HUD update ticker
@@ -617,6 +643,10 @@
 
         onUnload() {
             safeLog("[Ko-fi API] Module unloaded.");
+            if (unlistenPlugin) {
+                unlistenPlugin();
+                unlistenPlugin = null;
+            }
             if (pollIntervalId) {
                 clearInterval(pollIntervalId);
                 pollIntervalId = null;

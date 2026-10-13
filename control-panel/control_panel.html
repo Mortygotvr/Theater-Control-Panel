@@ -1522,18 +1522,38 @@
     }
 
     // Theater's own chat reader (its "📡 Chat & Alerts" window): each message
-    // Theater Reader would have sent comes by the theater_reader_event signal
+    // Theater Reader would have sent comes by the theater_reader_event signal.
+    // When Theater's plugins share their relay in OBS (theater_relay_host:
+    // Theater Reader, the Theater API plugins), every message sent through it
+    // comes once by the theater_event signal instead, Theater Reader's and the
+    // Theater API plugins' alike; theater_reader_event then only says whether
+    // Theater Reader reads the chats.
     function startTheaterReaderLink() {
         const setInObs = (on) => {
             if (on !== theaterReaderInObs) logMsg(on ? '[Theater] Reading the chats in OBS: alerts come from Theater.' : '[Theater] Not reading the chats: alerts come from Theater Reader.');
             theaterReaderInObs = on;
         };
+        window.__TAURI__.core.invoke('obs_call_proc', { name: 'theater_relay_host', returns: { name: 'string' } })
+            .then(out => {
+                theaterRelayInObs = true;
+                logMsg(`[Theater] Alerts come from Theater's plugins in OBS (relay hosted by ${(out && out.name) || 'a Theater plugin'}).`);
+            })
+            .catch(() => {});
+        window.__TAURI__.core.invoke('obs_forward_signal', { name: 'theater_event', args: { json: 'string' } }).catch(() => {});
+        window.__TAURI__.event.listen('theater_event', (e) => {
+            let data;
+            try { data = JSON.parse((e.payload && e.payload.json) || '{}'); } catch (err) { return; }
+            theaterRelayInObs = true;
+            handleReaderMessage(data);
+        });
         window.__TAURI__.core.invoke('obs_forward_signal', { name: 'theater_reader_event', args: { json: 'string' } }).catch(() => {});
         window.__TAURI__.event.listen('theater_reader_event', (e) => {
             let data;
             try { data = JSON.parse((e.payload && e.payload.json) || '{}'); } catch (err) { return; }
             if (data.type === 'reader_state') { setInObs(!!data.enabled); return; }
             setInObs(true);
+            // (It came by theater_event too)
+            if (theaterRelayInObs) return;
             handleReaderMessage(data);
         });
         window.__TAURI__.core.invoke('obs_call_proc', { name: 'theater_reader_state', returns: { enabled: 'bool' } })
@@ -1673,9 +1693,10 @@
         SAWebSocket.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-                // Theater reads the chats in OBS: its messages come by the
-                // theater_reader_event signal (the relay has the same ones)
-                if (theaterReaderInObs && READER_EVENT_TYPES.includes(data.type)) return;
+                // Theater reads the chats in OBS (or its plugins share the
+                // relay there): its messages come by OBS signal (the relay
+                // has the same ones)
+                if ((theaterReaderInObs || theaterRelayInObs) && READER_EVENT_TYPES.includes(data.type)) return;
                 handleReaderMessage(data);
             } catch(e) {}
         };
@@ -1684,6 +1705,8 @@
     // Theater Reader's messages (from its websocket, or Theater's reader in OBS)
     const READER_EVENT_TYPES = ['moderation', 'alert', 'chat', 'whisper'];
     let theaterReaderInObs = false;
+    // Theater's plugins share their relay in OBS: messages come by theater_event
+    let theaterRelayInObs = false;
 
     function handleReaderMessage(data) {
             try {
