@@ -1523,11 +1523,13 @@
 
     // Theater's own chat reader (its "📡 Chat & Alerts" window): each message
     // Theater Reader would have sent comes by the theater_reader_event signal.
-    // When Theater's plugins share their relay in OBS (theater_relay_host:
-    // Theater Reader, the Theater API plugins), every message sent through it
-    // comes once by the theater_event signal instead, Theater Reader's and the
-    // Theater API plugins' alike; theater_reader_event then only says whether
-    // Theater Reader reads the chats.
+    // When Theater Reader's plugin hosts the relay in OBS (theater_relay_host),
+    // every message sent through it comes once by the theater_event signal
+    // instead, Theater Reader's and the Theater API plugins' alike;
+    // theater_reader_event then only says whether Theater Reader reads the
+    // chats. Without it, the Theater API plugins (which never take the relay's
+    // port: it's a Reader's) send by theater_event only, and the Theater
+    // Reader app's messages still come by its websocket.
     function startTheaterReaderLink() {
         const setInObs = (on) => {
             if (on !== theaterReaderInObs) logMsg(on ? '[Theater] Reading the chats in OBS: alerts come from Theater.' : '[Theater] Not reading the chats: alerts come from Theater Reader.');
@@ -1543,9 +1545,17 @@
         window.__TAURI__.event.listen('theater_event', (e) => {
             let data;
             try { data = JSON.parse((e.payload && e.payload.json) || '{}'); } catch (err) { return; }
-            theaterRelayInObs = true;
             handleReaderMessage(data);
         });
+        // The channels Theater API · Twitch sends alerts for: the Theater
+        // Reader app's alerts for them would come twice
+        const refreshApiTwitchChannels = () => window.__TAURI__.core.invoke('obs_call_proc', { name: 'theater_api_twitch_channels', returns: { json: 'string' } })
+            .then(out => {
+                try { apiTwitchChannels = JSON.parse((out && out.json) || '[]').map(c => String(c).toLowerCase()); } catch (err) { apiTwitchChannels = []; }
+            })
+            .catch(() => { apiTwitchChannels = []; });
+        refreshApiTwitchChannels();
+        setInterval(refreshApiTwitchChannels, 30000);
         window.__TAURI__.core.invoke('obs_forward_signal', { name: 'theater_reader_event', args: { json: 'string' } }).catch(() => {});
         window.__TAURI__.event.listen('theater_reader_event', (e) => {
             let data;
@@ -1697,6 +1707,9 @@
                 // relay there): its messages come by OBS signal (the relay
                 // has the same ones)
                 if ((theaterReaderInObs || theaterRelayInObs) && READER_EVENT_TYPES.includes(data.type)) return;
+                // The Theater Reader app's Twitch alert that Theater API ·
+                // Twitch sends too (by theater_event)
+                if (data.type === 'alert' && apiTwitchSends(data.trigger)) return;
                 handleReaderMessage(data);
             } catch(e) {}
         };
@@ -1705,8 +1718,15 @@
     // Theater Reader's messages (from its websocket, or Theater's reader in OBS)
     const READER_EVENT_TYPES = ['moderation', 'alert', 'chat', 'whisper'];
     let theaterReaderInObs = false;
-    // Theater's plugins share their relay in OBS: messages come by theater_event
+    // Theater Reader's plugin hosts the relay in OBS: messages come by theater_event
     let theaterRelayInObs = false;
+    // The channels Theater API · Twitch sends alerts for (lowercase)
+    let apiTwitchChannels = [];
+    // Whether a trigger ("Twitch <channel> …") is one of theirs
+    function apiTwitchSends(trigger) {
+        const words = String(trigger || '').trim().split(/\s+/);
+        return words.length > 1 && words[0].toLowerCase() === 'twitch' && apiTwitchChannels.includes(words[1].replace(/^#/, '').toLowerCase());
+    }
 
     function handleReaderMessage(data) {
             try {
