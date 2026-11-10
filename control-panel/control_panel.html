@@ -1707,9 +1707,11 @@
                 // relay there): its messages come by OBS signal (the relay
                 // has the same ones)
                 if ((theaterReaderInObs || theaterRelayInObs) && READER_EVENT_TYPES.includes(data.type)) return;
-                // The Theater Reader app's Twitch alert that Theater API ·
-                // Twitch sends too (by theater_event)
-                if (data.type === 'alert' && apiTwitchSends(data.trigger)) return;
+                // The Theater Reader app's Twitch alert, or its trigger feed
+                // (moderation: what runs the triggers), that Theater API ·
+                // Twitch sends too (by theater_event, same trigger)
+                const sentTrigger = data.type === 'moderation' ? (data.payload && data.payload.trigger) : data.trigger;
+                if ((data.type === 'alert' || data.type === 'moderation') && apiTwitchSends(sentTrigger)) return;
                 handleReaderMessage(data);
             } catch(e) {}
         };
