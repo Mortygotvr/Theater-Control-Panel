@@ -1670,7 +1670,7 @@ dependencies = [
 
 [[package]]
 name = "theater-control-panel"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "cc",
  "object",
